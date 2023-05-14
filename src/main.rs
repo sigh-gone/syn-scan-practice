@@ -10,6 +10,7 @@ use pnet_packet::ethernet::EthernetPacket;
 use pnet_packet::ipv4::Ipv4Packet;
 use pnet_packet::ipv6::MutableIpv6Packet;
 use pnet_packet::tcp::TcpPacket;
+use rand::{thread_rng, Rng};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 fn main() {
@@ -161,13 +162,13 @@ pub fn build_random_ipv6(partial_packet: &PartialIpv6TCPPacketData, tmp_packet: 
     }
 }
 
-pub fn send_tcp_ipv4(destination_ip: Ipv4Addr, interface: String, count: u32) {
+pub fn send_tcp_ipv4(destination_ip: Ipv4Addr, interface: String) {
     let interfaces = pnet::datalink::interfaces();
 
     println!("List of Available Interfaces\n");
 
     for interface in interfaces.iter() {
-        let iface_ip = interface.ips.iter().next().map(|x| match x.ip() {
+        let iface_ip = interface.ips.first().map(|x| match x.ip() {
             IpAddr::V4(ipv4) => Some(ipv4),
             _ => panic!("ERR - Interface IP is IPv6 (or unknown) which is not currently supported"),
         });
@@ -181,31 +182,32 @@ pub fn send_tcp_ipv4(destination_ip: Ipv4Addr, interface: String, count: u32) {
     }
 
     let interfaces_name_match = |iface: &NetworkInterface| iface.name == interface;
-    let interface = interfaces
-        .into_iter()
-        .filter(interfaces_name_match)
-        .next()
-        .expect(&format!("could not find interface by name {}", interface));
+
+    let interface = interfaces.into_iter().find(interfaces_name_match).unwrap();
 
     let iface_ip = match interface
         .ips
         .iter()
         .nth(0)
-        .expect(&format!(
-            "the interface {} does not have any IP addresses",
-            interface
-        ))
+        .unwrap_or_else(|| panic!("the interface {} does not have any IP addresses", interface))
         .ip()
     {
         IpAddr::V4(ipv4) => ipv4,
         _ => panic!("ERR - Interface IP is IPv6 (or unknown) which is not currently supported"),
     };
 
+    let mut rng = thread_rng();
+    let port: u16 = rng.gen_range(1024..65535);
+
+    let sport: u16 = port;
+    let dport: u16 = 80;
     let partial_packet: PartialIpv4TCPPacketData = PartialIpv4TCPPacketData {
-        destination_ip: destination_ip,
+        destination_ip,
         iface_ip,
         iface_name: &interface.name,
         iface_src_mac: &interface.mac.unwrap(),
+        sport: &sport,
+        dport: &dport,
     };
 
     let (mut tx, mut rx) = match pnet::datalink::channel(&interface, Default::default()) {
@@ -214,8 +216,6 @@ pub fn send_tcp_ipv4(destination_ip: Ipv4Addr, interface: String, count: u32) {
         Err(e) => panic!("Error happened {}", e),
     };
 
-    //v6 0x86DD
-    //v4 2048
     tx.build_and_send(1, 66, &mut |packet: &mut [u8]| {
         build_random_ipv4(&partial_packet, packet);
     });
