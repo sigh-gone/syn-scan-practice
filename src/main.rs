@@ -5,7 +5,8 @@ use pnet::packet::ipv4::{Ipv4Flags, Ipv4Packet, MutableIpv4Packet};
 use pnet::packet::ipv6::MutableIpv6Packet;
 use pnet::packet::tcp::{MutableTcpPacket, TcpFlags, TcpOption, TcpPacket};
 use pnet::packet::Packet;
-use pnet::transport::{transport_channel, TransportChannelType};
+use pnet::transport::{self, transport_channel, TransportChannelType, TransportProtocol};
+use pnet_packet::tcp::ipv4_checksum;
 use rand::{thread_rng, Rng};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -29,12 +30,14 @@ pub struct PartialIpv6TCPPacketData<'a> {
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
-    send_tcp_ipv4(
+    /*send_tcp_ipv4(
         "99.86.91.111".parse::<Ipv4Addr>().unwrap(),
         "en0".to_string(),
     )
-    .await;
+    .await;*/
+    //build_syn_packet(, dest_ip, source_port, dest_port, seq_number)
     Ok(())
+
     //let s = get_interface_ipv4_address().unwrap();
     //println!("{:?}", s.to_string());
 }
@@ -282,3 +285,64 @@ fn get_interface_ipv4_address() -> Option<std::net::Ipv4Addr> {
     tcp_sender.send_to(packet, destination)
 }
 */
+
+fn build_syn_packet<'a>(
+    source_ip: std::net::Ipv4Addr,
+    dest_ip: std::net::Ipv4Addr,
+    source_port: u16,
+    dest_port: u16,
+    seq_number: u32,
+) -> Vec<u8> {
+    let mut tcp_buffer = [0u8; 20];
+    let mut tcp_packet = MutableTcpPacket::new(&mut tcp_buffer).unwrap();
+
+    tcp_packet.set_source(source_port);
+    tcp_packet.set_destination(dest_port);
+    tcp_packet.set_sequence(seq_number);
+    tcp_packet.set_flags(TcpFlags::SYN);
+    tcp_packet.set_window(64240);
+    tcp_packet.set_data_offset(5);
+    tcp_packet.set_checksum(0);
+
+    let checksum = ipv4_checksum(&tcp_packet.to_immutable(), &source_ip, &dest_ip);
+    tcp_packet.set_checksum(checksum);
+
+    Vec::from(tcp_packet.packet())
+}
+
+fn send_packet(packet: Vec<u8>, source_ip: std::net::Ipv4Addr, dest_ip: std::net::Ipv4Addr) {
+    let (mut ts, mut tr) = transport::transport_channel(
+        4096,
+        TransportChannelType::Layer4(TransportProtocol::Ipv4(IpNextHeaderProtocols::Tcp)),
+    )
+    .unwrap();
+    //transport::send_to(&mut ts, packet, std::net::IpAddr::V4(source_ip), std::net::IpAddr::V4(dest_ip)).unwrap();
+    let arr = vector_as_u8_4_array(packet);
+    let tcp_packet = TcpPacket::new(&arr).unwrap();
+    ts.send_to(tcp_packet, dest_ip.to_string().parse::<IpAddr>().unwrap());
+}
+
+#[macro_use]
+macro_rules! convert_u8vec_to_array {
+    ($container:ident, $size:expr) => {{
+        if $container.len() != $size {
+            None
+        } else {
+            use std::mem;
+            let mut arr: [_; $size] = unsafe { mem::uninitialized() };
+            for element in $container.into_iter().enumerate() {
+                let old_val = mem::replace(&mut arr[element.0], element.1);
+                unsafe { mem::forget(old_val) };
+            }
+            Some(arr)
+        }
+    }};
+}
+
+fn vector_as_u8_4_array(vector: Vec<u8>) -> [u8; 20] {
+    let mut arr = [0u8; 20];
+    for i in (0..20) {
+        arr[i] = vector[i];
+    }
+    arr
+}
