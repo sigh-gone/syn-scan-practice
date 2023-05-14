@@ -36,6 +36,18 @@ async fn main() -> Result<(), String> {
     )
     .await;*/
     //build_syn_packet(, dest_ip, source_port, dest_port, seq_number)
+
+    let mut rng = thread_rng();
+    let port: u16 = rng.gen_range(1024..65535);
+    //let resp = reqwest::get("https://api.ipify.org").await.unwrap();
+    //let public_ip = resp.text().await.unwrap();
+    let public_ip = public_ip::addr().await.unwrap();
+    let pi = public_ip.to_string().parse::<Ipv4Addr>().unwrap();
+    let dest = "99.86.91.111".parse::<Ipv4Addr>().unwrap();
+
+    let packet = build_syn_packet(pi, dest, port, 443, 0);
+    send_packet(packet, pi, dest);
+
     Ok(())
 
     //let s = get_interface_ipv4_address().unwrap();
@@ -317,9 +329,9 @@ fn send_packet(packet: Vec<u8>, source_ip: std::net::Ipv4Addr, dest_ip: std::net
     )
     .unwrap();
     //transport::send_to(&mut ts, packet, std::net::IpAddr::V4(source_ip), std::net::IpAddr::V4(dest_ip)).unwrap();
-    let arr = vector_as_u8_4_array(packet);
+    let arr = demo(packet);
     let tcp_packet = TcpPacket::new(&arr).unwrap();
-    ts.send_to(tcp_packet, dest_ip.to_string().parse::<IpAddr>().unwrap());
+    let _ = ts.send_to(tcp_packet, dest_ip.to_string().parse::<IpAddr>().unwrap());
 }
 
 #[macro_use]
@@ -339,10 +351,14 @@ macro_rules! convert_u8vec_to_array {
     }};
 }
 
-fn vector_as_u8_4_array(vector: Vec<u8>) -> [u8; 20] {
-    let mut arr = [0u8; 20];
-    for i in (0..20) {
-        arr[i] = vector[i];
-    }
-    arr
+fn demo<T>(v: Vec<T>) -> [T; 20]
+where
+    T: Copy,
+{
+    let slice = v.as_slice();
+    let array: [T; 20] = match slice.try_into() {
+        Ok(ba) => ba,
+        Err(_) => panic!("Expected a Vec of length {} but it was {}", 32, v.len()),
+    };
+    array
 }
