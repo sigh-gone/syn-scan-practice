@@ -1,4 +1,4 @@
-use pnet::datalink::{self, Channel, MacAddr, NetworkInterface};
+use pnet::datalink::{self, Channel, DataLinkReceiver, MacAddr, NetworkInterface};
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket, MutableEthernetPacket};
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::ipv4::{Ipv4Flags, Ipv4Packet, MutableIpv4Packet};
@@ -47,6 +47,7 @@ async fn main() -> Result<(), String> {
 
     let packet = build_syn_packet(pi, dest, port, 443, 0);
     send_packet(packet, pi, dest);
+    receive_packets(port, 16);
 
     Ok(())
 
@@ -285,19 +286,6 @@ fn get_interface_ipv4_address() -> Option<std::net::Ipv4Addr> {
     None
 }
 
-/*fn smoke() {
-    // Set up the socket
-    let (mut tcp_sender, rx) = transport_channel(
-        4096,
-        TransportChannelType::Layer4(pnet::transport::TransportProtocol::Ipv4(
-            pnet::packet::ip::IpNextHeaderProtocols::Tcp,
-        )),
-    )
-    .unwrap();
-    tcp_sender.send_to(packet, destination)
-}
-*/
-
 fn build_syn_packet<'a>(
     source_ip: std::net::Ipv4Addr,
     dest_ip: std::net::Ipv4Addr,
@@ -328,6 +316,7 @@ fn send_packet(packet: Vec<u8>, source_ip: std::net::Ipv4Addr, dest_ip: std::net
         TransportChannelType::Layer4(TransportProtocol::Ipv4(IpNextHeaderProtocols::Tcp)),
     )
     .unwrap();
+
     //transport::send_to(&mut ts, packet, std::net::IpAddr::V4(source_ip), std::net::IpAddr::V4(dest_ip)).unwrap();
     let arr = demo(packet);
     let tcp_packet = TcpPacket::new(&arr).unwrap();
@@ -361,4 +350,49 @@ where
         Err(_) => panic!("Expected a Vec of length {} but it was {}", 32, v.len()),
     };
     array
+}
+
+fn receive_packets(s_port: u16, count: i32) {
+    let interfaces = pnet::datalink::interfaces();
+    let interfaces_name_match = |iface: &NetworkInterface| iface.name == "en0";
+
+    let interface = interfaces.into_iter().find(interfaces_name_match).unwrap();
+
+    let iface_ip = match interface
+        .ips
+        .iter()
+        .nth(0)
+        .unwrap_or_else(|| panic!("the interface {} does not have any IP addresses", interface))
+        .ip()
+    {
+        IpAddr::V4(ipv4) => ipv4,
+        _ => panic!("ERR - Interface IP is IPv6 (or unknown) which is not currently supported"),
+    };
+    let (mut tx, mut rx) = match pnet::datalink::channel(&interface, Default::default()) {
+        Ok(Channel::Ethernet(tx, rx)) => (tx, rx),
+        Ok(_) => panic!("Unknown channel type"),
+        Err(e) => panic!("Error happened {}", e),
+    };
+    loop {
+        match rx.next() {
+            Ok(packet) => {
+                let eth_packet = EthernetPacket::new(packet).unwrap();
+                if eth_packet.get_ethertype() == EtherTypes::Ipv4 {
+                    let ipv4_packet = Ipv4Packet::new(eth_packet.payload()).unwrap();
+                    if ipv4_packet.get_next_level_protocol() == IpNextHeaderProtocols::Tcp {
+                        let tcp_packet = TcpPacket::new(ipv4_packet.payload()).unwrap();
+                        if tcp_packet.get_flags() == TcpFlags::SYN | TcpFlags::ACK
+                            && tcp_packet.get_destination() == s_port
+                        {
+                            // process the SYN-ACK packet here
+                            println!("in");
+                        } else {
+                            println!("{:?}", tcp_packet.get_flags());
+                        }
+                    }
+                }
+            }
+            Err(e) => println!("error while receiving packet: {:?}", e),
+        }
+    }
 }
