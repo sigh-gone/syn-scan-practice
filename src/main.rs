@@ -1,21 +1,13 @@
-use pnet::datalink::{Channel, MacAddr, NetworkInterface};
-use pnet::packet::ethernet::{EtherTypes, MutableEthernetPacket};
+use pnet::datalink::{self, Channel, MacAddr, NetworkInterface};
+use pnet::packet::ethernet::{EtherTypes, EthernetPacket, MutableEthernetPacket};
 use pnet::packet::ip::IpNextHeaderProtocols;
-use pnet::packet::ipv4::Ipv4Flags;
-use pnet::packet::ipv4::MutableIpv4Packet;
-use pnet::packet::tcp::TcpOption;
-use pnet::packet::tcp::{MutableTcpPacket, TcpFlags};
+use pnet::packet::ipv4::{Ipv4Flags, Ipv4Packet, MutableIpv4Packet};
+use pnet::packet::ipv6::MutableIpv6Packet;
+use pnet::packet::tcp::{MutableTcpPacket, TcpFlags, TcpOption, TcpPacket};
 use pnet::packet::Packet;
-use pnet_packet::ethernet::EthernetPacket;
-use pnet_packet::ipv4::Ipv4Packet;
-use pnet_packet::ipv6::MutableIpv6Packet;
-use pnet_packet::tcp::TcpPacket;
+use pnet::transport::{transport_channel, TransportChannelType};
 use rand::{thread_rng, Rng};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-
-fn main() {
-    println!("Hello, world!");
-}
 
 pub struct PartialIpv4TCPPacketData<'a> {
     pub destination_ip: Ipv4Addr,
@@ -35,7 +27,19 @@ pub struct PartialIpv6TCPPacketData<'a> {
     pub dport: &'a u16,
 }
 
-pub fn build_random_ipv4(partial_packet: &PartialIpv4TCPPacketData, tmp_packet: &mut [u8]) {
+#[tokio::main]
+async fn main() -> Result<(), String> {
+    send_tcp_ipv4(
+        "99.86.91.111".parse::<Ipv4Addr>().unwrap(),
+        "en0".to_string(),
+    )
+    .await;
+    Ok(())
+    //let s = get_interface_ipv4_address().unwrap();
+    //println!("{:?}", s.to_string());
+}
+
+pub fn build_tcp_ipv4(partial_packet: &PartialIpv4TCPPacketData, tmp_packet: &mut [u8]) {
     const ETHERNET_HEADER_LEN: usize = 14;
     const IPV4_HEADER_LEN: usize = 20;
 
@@ -101,9 +105,9 @@ pub fn build_random_ipv4(partial_packet: &PartialIpv4TCPPacketData, tmp_packet: 
     }
 }
 
-pub fn build_random_ipv6(partial_packet: &PartialIpv6TCPPacketData, tmp_packet: &mut [u8]) {
+pub fn build_tcp_ipv6(partial_packet: &PartialIpv6TCPPacketData, tmp_packet: &mut [u8]) {
     const ETHERNET_HEADER_LEN: usize = 14;
-    const IPV4_HEADER_LEN: usize = 40;
+    const IPV6_HEADER_LEN: usize = 40;
 
     // Setup Ethernet header
     {
@@ -118,7 +122,7 @@ pub fn build_random_ipv6(partial_packet: &PartialIpv6TCPPacketData, tmp_packet: 
     // Setup IP header
     {
         let mut ip_header = MutableIpv6Packet::new(
-            &mut tmp_packet[ETHERNET_HEADER_LEN..(ETHERNET_HEADER_LEN + IPV4_HEADER_LEN)],
+            &mut tmp_packet[ETHERNET_HEADER_LEN..(ETHERNET_HEADER_LEN + IPV6_HEADER_LEN)],
         )
         .unwrap();
 
@@ -134,7 +138,7 @@ pub fn build_random_ipv6(partial_packet: &PartialIpv6TCPPacketData, tmp_packet: 
     // Setup TCP header
     {
         let mut tcp_header =
-            MutableTcpPacket::new(&mut tmp_packet[(ETHERNET_HEADER_LEN + IPV4_HEADER_LEN)..])
+            MutableTcpPacket::new(&mut tmp_packet[(ETHERNET_HEADER_LEN + IPV6_HEADER_LEN)..])
                 .unwrap();
 
         tcp_header.set_source(*partial_packet.sport);
@@ -142,7 +146,6 @@ pub fn build_random_ipv6(partial_packet: &PartialIpv6TCPPacketData, tmp_packet: 
         tcp_header.set_flags(TcpFlags::SYN);
         tcp_header.set_window(64240);
         tcp_header.set_data_offset(8);
-        tcp_header.set_urgent_ptr(0);
         tcp_header.set_sequence(0);
 
         tcp_header.set_options(&[
@@ -162,25 +165,8 @@ pub fn build_random_ipv6(partial_packet: &PartialIpv6TCPPacketData, tmp_packet: 
     }
 }
 
-pub fn send_tcp_ipv4(destination_ip: Ipv4Addr, interface: String) {
+pub async fn send_tcp_ipv4(destination_ip: Ipv4Addr, interface: String) {
     let interfaces = pnet::datalink::interfaces();
-
-    println!("List of Available Interfaces\n");
-
-    for interface in interfaces.iter() {
-        let iface_ip = interface.ips.first().map(|x| match x.ip() {
-            IpAddr::V4(ipv4) => Some(ipv4),
-            _ => panic!("ERR - Interface IP is IPv6 (or unknown) which is not currently supported"),
-        });
-
-        println!(
-            "Interface name: {:?}\nInterface MAC: {:?}\nInterface IP: {:?}\n",
-            &interface.name,
-            &interface.mac.unwrap(),
-            iface_ip
-        )
-    }
-
     let interfaces_name_match = |iface: &NetworkInterface| iface.name == interface;
 
     let interface = interfaces.into_iter().find(interfaces_name_match).unwrap();
@@ -198,12 +184,17 @@ pub fn send_tcp_ipv4(destination_ip: Ipv4Addr, interface: String) {
 
     let mut rng = thread_rng();
     let port: u16 = rng.gen_range(1024..65535);
+    //let resp = reqwest::get("https://api.ipify.org").await.unwrap();
+    //let public_ip = resp.text().await.unwrap();
+    let public_ip = public_ip::addr().await.unwrap();
+    let pi = public_ip.to_string().parse::<Ipv4Addr>().unwrap();
 
+    println!("{:?}", iface_ip.to_string());
     let sport: u16 = port;
-    let dport: u16 = 80;
+    let dport: u16 = 443;
     let partial_packet: PartialIpv4TCPPacketData = PartialIpv4TCPPacketData {
         destination_ip,
-        iface_ip,
+        iface_ip: pi,
         iface_name: &interface.name,
         iface_src_mac: &interface.mac.unwrap(),
         sport: &sport,
@@ -216,34 +207,78 @@ pub fn send_tcp_ipv4(destination_ip: Ipv4Addr, interface: String) {
         Err(e) => panic!("Error happened {}", e),
     };
 
+    //this size would be the same
     tx.build_and_send(1, 66, &mut |packet: &mut [u8]| {
-        build_random_ipv4(&partial_packet, packet);
+        build_tcp_ipv4(&partial_packet, packet);
     });
-    if let Ok(packet) = rx.next() {
-        let eth_packet = EthernetPacket::new(packet).unwrap();
-        if eth_packet.get_ethertype() == EtherTypes::Ipv4 {
-            // Extract the IPv4 packet
-            if let Some(ipv4_packet) = Ipv4Packet::new(eth_packet.payload()) {
-                // Check if the IP protocol is TCP
-                if ipv4_packet.get_next_level_protocol()
-                    == pnet::packet::ip::IpNextHeaderProtocols::Tcp
-                {
-                    // Extract the TCP segment
-                    if let Some(tcp_segment) = TcpPacket::new(ipv4_packet.payload()) {
-                        // Do something with the TCP segment
-                        println!("{:?}", tcp_segment.get_flags());
-                        if tcp_segment.get_destination() == *partial_packet.sport
-                            && tcp_segment.get_flags() == TcpFlags::SYN + TcpFlags::ACK
-                        {
-                            println!(
-                                "Received TCP packet with source port {}, destination port {}",
-                                tcp_segment.get_source(),
-                                tcp_segment.get_destination()
-                            );
-                        }
+
+    match rx.next() {
+        Ok(packet) => {
+            let eth_packet = EthernetPacket::new(packet).unwrap();
+            if eth_packet.get_ethertype() == EtherTypes::Ipv4 {
+                let ipv4_packet = Ipv4Packet::new(eth_packet.payload()).unwrap();
+                if ipv4_packet.get_next_level_protocol() == IpNextHeaderProtocols::Tcp {
+                    let tcp_packet = TcpPacket::new(ipv4_packet.payload()).unwrap();
+                    if tcp_packet.get_flags() == TcpFlags::SYN | TcpFlags::ACK
+                        && tcp_packet.get_destination() == *partial_packet.sport
+                    {
+                        // process the SYN-ACK packet here
+                        println!("in");
+                    } else {
+                        println!("{:?}", tcp_packet.get_flags());
                     }
                 }
             }
         }
+        Err(e) => println!("error while receiving packet: {:?}", e),
     }
+    /*     loop {
+        match rx.next() {
+            Ok(packet) => {
+                let eth_packet = EthernetPacket::new(packet).unwrap();
+                if eth_packet.get_ethertype() == EtherTypes::Ipv4 {
+                    let ipv4_packet = Ipv4Packet::new(eth_packet.payload()).unwrap();
+                    if ipv4_packet.get_next_level_protocol() == IpNextHeaderProtocols::Tcp {
+                        let tcp_packet = TcpPacket::new(ipv4_packet.payload()).unwrap();
+                        if tcp_packet.get_flags() == TcpFlags::SYN | TcpFlags::ACK
+                            && tcp_packet.get_destination() == *partial_packet.sport
+                        {
+                            // process the SYN-ACK packet here
+                            println!("in");
+                        } else {
+                            println!("{:?}", tcp_packet.get_flags());
+                        }
+                    }
+                }
+            }
+            Err(e) => println!("error while receiving packet: {:?}", e),
+        }
+    }
+    */
 }
+
+fn get_interface_ipv4_address() -> Option<std::net::Ipv4Addr> {
+    let interfaces = datalink::interfaces();
+    for interface in interfaces {
+        for ip_network in interface.ips {
+            println!("{:?}", ip_network);
+            if let std::net::IpAddr::V4(ipv4_address) = ip_network.ip() {
+                //return Some(ipv4_address);
+            }
+        }
+    }
+    None
+}
+
+/*fn smoke() {
+    // Set up the socket
+    let (mut tcp_sender, rx) = transport_channel(
+        4096,
+        TransportChannelType::Layer4(pnet::transport::TransportProtocol::Ipv4(
+            pnet::packet::ip::IpNextHeaderProtocols::Tcp,
+        )),
+    )
+    .unwrap();
+    tcp_sender.send_to(packet, destination)
+}
+*/
