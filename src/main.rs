@@ -29,7 +29,7 @@ async fn main() -> Result<(), String> {
 }
 
 fn get_socket(destination: IpAddr) -> Result<TransportSender, String> {
-    match destination.clone() {
+    match destination {
         IpAddr::V4(_) => {
             let (ts, mut _tr) = transport::transport_channel(
                 4096,
@@ -61,7 +61,7 @@ fn send_packets_ipv4(
         let mut tcp_packet =
             MutableTcpPacket::new(&mut vec[(ETHERNET_HEADER_LEN + IPV4_HEADER_LEN)..]).unwrap();
         build_syn_packet(&mut tcp_packet, source_ip, dest_ip, source_port, dest_port);
-        let tcp_packet = TcpPacket::new(&tcp_packet.packet()).unwrap();
+        let tcp_packet = TcpPacket::new(tcp_packet.packet()).unwrap();
         let _ = ts.send_to(tcp_packet, dest_ip.to_string().parse::<IpAddr>().unwrap());
     }
 }
@@ -79,7 +79,7 @@ fn send_packets_ipv6(
         let mut tcp_packet =
             MutableTcpPacket::new(&mut vec[(ETHERNET_HEADER_LEN + IPV6_HEADER_LEN)..]).unwrap();
         build_syn_packet(&mut tcp_packet, source_ip, dest_ip, source_port, dest_port);
-        let tcp_packet = TcpPacket::new(&tcp_packet.packet()).unwrap();
+        let tcp_packet = TcpPacket::new(tcp_packet.packet()).unwrap();
         let _ = ts.send_to(tcp_packet, dest_ip.to_string().parse::<IpAddr>().unwrap());
     }
 }
@@ -88,23 +88,12 @@ fn receive_packets_(interface_name: &str, s_port: u16) {
     let interfaces = pnet::datalink::interfaces();
     let interfaces_name_match = |iface: &NetworkInterface| iface.name == interface_name;
     let interface = interfaces.into_iter().find(interfaces_name_match).unwrap();
-
-    /*let iface_ip = match interface
-        .ips
-        .iter()
-        .nth(0)
-        .unwrap_or_else(|| panic!("the interface {} does not have any IP addresses", interface))
-        .ip()
-    {
-        IpAddr::V4(ipv4) => ipv4,
-        _ => panic!("ERR - Interface IP is IPv6 (or unknown) which is not currently supported"),
-    };*/
-
     let (mut _t, mut rx) = match pnet::datalink::channel(&interface, Default::default()) {
         Ok(Channel::Ethernet(tx, rx)) => (tx, rx),
         Ok(_) => panic!("Unknown channel type"),
         Err(e) => panic!("Error happened {}", e),
     };
+
     loop {
         match rx.next() {
             Ok(packet) => {
@@ -150,7 +139,7 @@ fn receive_packets_(interface_name: &str, s_port: u16) {
     }
 }
 
-fn build_syn_packet<'a>(
+fn build_syn_packet(
     tcp_packet: &mut MutableTcpPacket,
     source_ip: std::net::IpAddr,
     dest_ip: std::net::IpAddr,
