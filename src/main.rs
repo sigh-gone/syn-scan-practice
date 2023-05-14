@@ -1,14 +1,14 @@
-use pnet::datalink::{Channel, NetworkInterface};//{self, Channel, DataLinkReceiver, MacAddr, NetworkInterface};
-use pnet::packet::ethernet::{EtherTypes, EthernetPacket};//, MutableEthernetPacket};
+use pnet::datalink::{Channel, NetworkInterface}; //{self, Channel, DataLinkReceiver, MacAddr, NetworkInterface};
+use pnet::packet::ethernet::{EtherTypes, EthernetPacket}; //, MutableEthernetPacket};
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::ipv4::Ipv4Packet; //, MutableIpv4Packet, Ipv4Flags};
-//use pnet::packet::ipv6::MutableIpv6Packet;
+                                    //use pnet::packet::ipv6::MutableIpv6Packet;
 use pnet::packet::tcp::{MutableTcpPacket, TcpFlags, TcpPacket}; //TcpOption
 use pnet::packet::Packet;
 use pnet::transport::{self, TransportChannelType, TransportProtocol}; //transport_channel,};
 use pnet_packet::tcp::ipv4_checksum;
 use rand::{thread_rng, Rng};
-use std::net::{IpAddr, Ipv4Addr}//, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr}; //, Ipv6Addr};
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
@@ -83,9 +83,10 @@ fn receive_packets(s_port: u16, count: i32) {
                             && tcp_packet.get_destination() == s_port
                         {
                             // process the SYN-ACK packet here
+                            println!("{:?}", tcp_packet.get_source()); //.get_destination());
                             println!("in");
                         } else {
-                            println!("{:?}", tcp_packet.get_flags());
+                            // println!("{:?}", tcp_packet.get_flags());
                         }
                     }
                 }
