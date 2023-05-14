@@ -105,9 +105,7 @@ fn receive_packets_(interface_name: &str, s_port: u16) {
                         if tcp_packet.get_flags() == TcpFlags::SYN | TcpFlags::ACK
                             && tcp_packet.get_destination() == s_port
                         {
-                            // process the SYN-ACK packet here
-                            println!("{:?}", tcp_packet.get_source()); //.get_destination());
-                            println!("in");
+                            println!("{:?} open", tcp_packet.get_source());
                         } else if tcp_packet.get_destination() == s_port
                             && tcp_packet.get_flags() == TcpFlags::RST
                         {
@@ -123,9 +121,7 @@ fn receive_packets_(interface_name: &str, s_port: u16) {
                         if tcp_packet.get_flags() == TcpFlags::SYN | TcpFlags::ACK
                             && tcp_packet.get_destination() == s_port
                         {
-                            // process the SYN-ACK packet here
-                            println!("{:?}", tcp_packet.get_source()); //.get_destination());
-                            println!("in");
+                            println!("{:?} open", tcp_packet.get_source());
                         } else if tcp_packet.get_destination() == s_port
                             && tcp_packet.get_flags() == TcpFlags::RST
                         {
