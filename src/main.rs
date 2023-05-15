@@ -8,7 +8,8 @@ use pnet::packet::tcp::{MutableTcpPacket, TcpFlags, TcpPacket}; //TcpOption
 use pnet::packet::Packet;
 use pnet::transport::{self, TransportChannelType, TransportProtocol, TransportSender};
 use rand::{thread_rng, Rng};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr}; //, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
 pub const IPV4_HEADER_LEN: usize = 20;
 pub const IPV6_HEADER_LEN: usize = 40;
 pub const ETHERNET_HEADER_LEN: usize = 14;
@@ -88,8 +89,9 @@ fn get_interface(interface_name: &str) -> (NetworkInterface, IpAddr) {
             }
             None => {
                 panic!(
-                    "cant get ip for interfac\n{}\n{}",
-                    interface_name, interface
+                    "cant get ip for interface \n {} \n interface: \n {}",
+                    interface_name,
+                    interface.to_string()
                 );
             }
         }
