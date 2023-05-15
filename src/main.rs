@@ -18,12 +18,13 @@ async fn main() -> Result<(), String> {
     let mut rng = thread_rng();
     let port: u16 = rng.gen_range(1024..65535);
     let dest = "99.86.91.111".parse::<IpAddr>().unwrap();
-    let pi = "192.168.1.3".parse::<IpAddr>().unwrap();
+    //let pi = "192.168.1.3".parse::<IpAddr>().unwrap();
     let ports: Vec<u16> = vec![80, 443, 100];
     let mut socket = get_socket(dest).unwrap();
 
-    send_packets_ipv4(&mut socket, ports, port, dest, pi);
-    receive_packets_("en0", port);
+    let (interface, iface_ip) = get_interface("en0");
+    send_packets_ipv4(&mut socket, ports, port, dest, iface_ip);
+    receive_packets(interface, port);
 
     Ok(())
 }
@@ -84,10 +85,80 @@ fn send_packets_ipv6(
     }
 }
 
+fn get_interface(interface_name: &str) -> (NetworkInterface, IpAddr) {
+    let interfaces = pnet::datalink::interfaces();
+    let interfaces_name_match = |iface: &NetworkInterface| iface.name == interface_name;
+
+    if let Some(interface) = interfaces.into_iter().find(interfaces_name_match) {
+        match interface.ips.first() {
+            Some(ip_network) => {
+                let ip = ip_network.ip();
+                (interface, ip)
+            }
+            None => {
+                panic!(
+                    "cant get ip for interfac\n{}\n{}",
+                    interface_name, interface
+                );
+            }
+        }
+    } else {
+        panic!("no interface named {}", interface_name);
+    }
+}
+
 fn receive_packets_(interface_name: &str, s_port: u16) {
     let interfaces = pnet::datalink::interfaces();
     let interfaces_name_match = |iface: &NetworkInterface| iface.name == interface_name;
     let interface = interfaces.into_iter().find(interfaces_name_match).unwrap();
+    let (mut _t, mut rx) = match pnet::datalink::channel(&interface, Default::default()) {
+        Ok(Channel::Ethernet(tx, rx)) => (tx, rx),
+        Ok(_) => panic!("Unknown channel type"),
+        Err(e) => panic!("Error happened {}", e),
+    };
+
+    loop {
+        match rx.next() {
+            Ok(packet) => {
+                let eth_packet = EthernetPacket::new(packet).unwrap();
+                if eth_packet.get_ethertype() == EtherTypes::Ipv4 {
+                    let ipv4_packet = Ipv4Packet::new(eth_packet.payload()).unwrap();
+                    if ipv4_packet.get_next_level_protocol() == IpNextHeaderProtocols::Tcp {
+                        let tcp_packet = TcpPacket::new(ipv4_packet.payload()).unwrap();
+                        if tcp_packet.get_flags() == TcpFlags::SYN | TcpFlags::ACK
+                            && tcp_packet.get_destination() == s_port
+                        {
+                            println!("{:?} open", tcp_packet.get_source());
+                        } else if tcp_packet.get_destination() == s_port
+                            && tcp_packet.get_flags() == TcpFlags::RST
+                        {
+                            println!("closed");
+                        } else if tcp_packet.get_destination() == s_port {
+                            println!("{:?}", tcp_packet.get_flags());
+                        }
+                    }
+                } else if eth_packet.get_ethertype() == EtherTypes::Ipv6 {
+                    let ipv6_packet = Ipv6Packet::new(eth_packet.payload()).unwrap();
+                    if ipv6_packet.get_next_header() == IpNextHeaderProtocols::Tcp {
+                        let tcp_packet = TcpPacket::new(ipv6_packet.payload()).unwrap();
+                        if tcp_packet.get_flags() == TcpFlags::SYN | TcpFlags::ACK
+                            && tcp_packet.get_destination() == s_port
+                        {
+                            println!("{:?} open", tcp_packet.get_source());
+                        } else if tcp_packet.get_destination() == s_port
+                            && tcp_packet.get_flags() == TcpFlags::RST
+                        {
+                            println!("closed");
+                        }
+                    }
+                }
+            }
+            Err(e) => println!("error while receiving packet: {:?}", e),
+        }
+    }
+}
+
+fn receive_packets(interface: NetworkInterface, s_port: u16) {
     let (mut _t, mut rx) = match pnet::datalink::channel(&interface, Default::default()) {
         Ok(Channel::Ethernet(tx, rx)) => (tx, rx),
         Ok(_) => panic!("Unknown channel type"),
