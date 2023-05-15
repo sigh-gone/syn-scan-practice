@@ -21,7 +21,6 @@ async fn main() -> Result<(), String> {
     //let pi = "192.168.1.3".parse::<IpAddr>().unwrap();
     let ports: Vec<u16> = vec![80, 443, 100];
     let mut socket = get_socket(dest).unwrap();
-
     let (interface, iface_ip) = get_interface("en0");
 
     match iface_ip {
@@ -123,57 +122,6 @@ fn get_interface(interface_name: &str) -> (NetworkInterface, IpAddr) {
     }
 }
 
-fn receive_packets_(interface_name: &str, s_port: u16) {
-    let interfaces = pnet::datalink::interfaces();
-    let interfaces_name_match = |iface: &NetworkInterface| iface.name == interface_name;
-    let interface = interfaces.into_iter().find(interfaces_name_match).unwrap();
-    let (mut _t, mut rx) = match pnet::datalink::channel(&interface, Default::default()) {
-        Ok(Channel::Ethernet(tx, rx)) => (tx, rx),
-        Ok(_) => panic!("Unknown channel type"),
-        Err(e) => panic!("Error happened {}", e),
-    };
-
-    loop {
-        match rx.next() {
-            Ok(packet) => {
-                let eth_packet = EthernetPacket::new(packet).unwrap();
-                if eth_packet.get_ethertype() == EtherTypes::Ipv4 {
-                    let ipv4_packet = Ipv4Packet::new(eth_packet.payload()).unwrap();
-                    if ipv4_packet.get_next_level_protocol() == IpNextHeaderProtocols::Tcp {
-                        let tcp_packet = TcpPacket::new(ipv4_packet.payload()).unwrap();
-                        if tcp_packet.get_flags() == TcpFlags::SYN | TcpFlags::ACK
-                            && tcp_packet.get_destination() == s_port
-                        {
-                            println!("{:?} open", tcp_packet.get_source());
-                        } else if tcp_packet.get_destination() == s_port
-                            && tcp_packet.get_flags() == TcpFlags::RST
-                        {
-                            println!("closed");
-                        } else if tcp_packet.get_destination() == s_port {
-                            println!("{:?}", tcp_packet.get_flags());
-                        }
-                    }
-                } else if eth_packet.get_ethertype() == EtherTypes::Ipv6 {
-                    let ipv6_packet = Ipv6Packet::new(eth_packet.payload()).unwrap();
-                    if ipv6_packet.get_next_header() == IpNextHeaderProtocols::Tcp {
-                        let tcp_packet = TcpPacket::new(ipv6_packet.payload()).unwrap();
-                        if tcp_packet.get_flags() == TcpFlags::SYN | TcpFlags::ACK
-                            && tcp_packet.get_destination() == s_port
-                        {
-                            println!("{:?} open", tcp_packet.get_source());
-                        } else if tcp_packet.get_destination() == s_port
-                            && tcp_packet.get_flags() == TcpFlags::RST
-                        {
-                            println!("closed");
-                        }
-                    }
-                }
-            }
-            Err(e) => println!("error while receiving packet: {:?}", e),
-        }
-    }
-}
-
 fn receive_packets(interface: NetworkInterface, s_port: u16) {
     let (mut _t, mut rx) = match pnet::datalink::channel(&interface, Default::default()) {
         Ok(Channel::Ethernet(tx, rx)) => (tx, rx),
@@ -185,39 +133,49 @@ fn receive_packets(interface: NetworkInterface, s_port: u16) {
         match rx.next() {
             Ok(packet) => {
                 let eth_packet = EthernetPacket::new(packet).unwrap();
-                if eth_packet.get_ethertype() == EtherTypes::Ipv4 {
-                    let ipv4_packet = Ipv4Packet::new(eth_packet.payload()).unwrap();
-                    if ipv4_packet.get_next_level_protocol() == IpNextHeaderProtocols::Tcp {
+                match eth_packet.get_ethertype() {
+                    EtherTypes::Ipv4 => {
+                        let ipv4_packet = Ipv4Packet::new(eth_packet.payload()).unwrap();
+                        if ipv4_packet.get_next_level_protocol() != IpNextHeaderProtocols::Tcp {
+                            continue;
+                        }
+
                         let tcp_packet = TcpPacket::new(ipv4_packet.payload()).unwrap();
-                        if tcp_packet.get_flags() == TcpFlags::SYN | TcpFlags::ACK
-                            && tcp_packet.get_destination() == s_port
-                        {
-                            println!("{:?} open", tcp_packet.get_source());
-                        } else if tcp_packet.get_destination() == s_port
-                            && tcp_packet.get_flags() == TcpFlags::RST
-                        {
-                            println!("closed");
-                        } else if tcp_packet.get_destination() == s_port {
-                            println!("{:?}", tcp_packet.get_flags());
+                        if tcp_packet.get_destination() == s_port {
+                            if (tcp_packet.get_flags() & (TcpFlags::SYN | TcpFlags::ACK))
+                                == (TcpFlags::SYN | TcpFlags::ACK)
+                            {
+                                println!("{:?} open", tcp_packet.get_source());
+                            } else if tcp_packet.get_flags() == TcpFlags::RST {
+                                println!("closed");
+                            } else {
+                                println!("{:?}", tcp_packet.get_flags());
+                            }
                         }
                     }
-                } else if eth_packet.get_ethertype() == EtherTypes::Ipv6 {
-                    let ipv6_packet = Ipv6Packet::new(eth_packet.payload()).unwrap();
-                    if ipv6_packet.get_next_header() == IpNextHeaderProtocols::Tcp {
+                    EtherTypes::Ipv6 => {
+                        let ipv6_packet = Ipv6Packet::new(eth_packet.payload()).unwrap();
+                        if ipv6_packet.get_next_header() != IpNextHeaderProtocols::Tcp {
+                            continue;
+                        }
+
                         let tcp_packet = TcpPacket::new(ipv6_packet.payload()).unwrap();
-                        if tcp_packet.get_flags() == TcpFlags::SYN | TcpFlags::ACK
-                            && tcp_packet.get_destination() == s_port
-                        {
-                            println!("{:?} open", tcp_packet.get_source());
-                        } else if tcp_packet.get_destination() == s_port
-                            && tcp_packet.get_flags() == TcpFlags::RST
-                        {
-                            println!("closed");
+                        if tcp_packet.get_destination() == s_port {
+                            if (tcp_packet.get_flags() & (TcpFlags::SYN | TcpFlags::ACK))
+                                == (TcpFlags::SYN | TcpFlags::ACK)
+                            {
+                                println!("{:?} open", tcp_packet.get_source());
+                            } else if tcp_packet.get_flags() == TcpFlags::RST {
+                                println!("closed");
+                            }
                         }
                     }
+                    _ => continue,
                 }
             }
-            Err(e) => println!("error while receiving packet: {:?}", e),
+            Err(e) => {
+                println!("error while receiving packet: {:?}", e)
+            }
         }
     }
 }
