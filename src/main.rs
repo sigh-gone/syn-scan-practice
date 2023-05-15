@@ -23,7 +23,15 @@ async fn main() -> Result<(), String> {
     let mut socket = get_socket(dest).unwrap();
 
     let (interface, iface_ip) = get_interface("en0");
-    send_packets_ipv4(&mut socket, ports, port, dest, iface_ip);
+
+    match iface_ip {
+        IpAddr::V4(_) => {
+            send_packets_ipv4(&mut socket, ports, port, dest, iface_ip);
+        }
+        IpAddr::V6(_) => {
+            send_packets_ipv6(&mut socket, ports, port, dest, iface_ip);
+        }
+    }
     receive_packets(interface, port);
 
     Ok(())
@@ -32,12 +40,14 @@ async fn main() -> Result<(), String> {
 fn get_socket(destination: IpAddr) -> Result<TransportSender, String> {
     match destination {
         IpAddr::V4(_) => {
-            let (ts, mut _tr) = transport::transport_channel(
+            if let Ok((ts, _tr)) = transport::transport_channel(
                 4096,
                 TransportChannelType::Layer4(TransportProtocol::Ipv4(IpNextHeaderProtocols::Tcp)),
-            )
-            .unwrap();
-            Ok(ts)
+            ) {
+                Ok(ts)
+            } else {
+                panic!("cant get socket v4");
+            }
         }
         IpAddr::V6(_) => {
             let (ts, mut _tr) = transport::transport_channel(
@@ -45,7 +55,14 @@ fn get_socket(destination: IpAddr) -> Result<TransportSender, String> {
                 TransportChannelType::Layer4(TransportProtocol::Ipv6(IpNextHeaderProtocols::Tcp)),
             )
             .unwrap();
-            Ok(ts)
+            if let Ok((ts, _tr)) = transport::transport_channel(
+                4096,
+                TransportChannelType::Layer4(TransportProtocol::Ipv6(IpNextHeaderProtocols::Tcp)),
+            ) {
+                Ok(ts)
+            } else {
+                panic!("cant get socket v6");
+            }
         }
     }
 }
@@ -67,7 +84,6 @@ fn send_packets_ipv4(
     }
 }
 
-#[warn(dead_code)]
 fn send_packets_ipv6(
     ts: &mut TransportSender,
     ports: Vec<u16>,
