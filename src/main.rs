@@ -1,5 +1,5 @@
-use pnet::datalink::{Channel, NetworkInterface}; //{self, Channel, DataLinkReceiver, MacAddr, NetworkInterface};
-use pnet::packet::ethernet::{EtherTypes, EthernetPacket}; //, MutableEthernetPacket};
+use pnet::datalink::{Channel, NetworkInterface};
+use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::ipv4::Ipv4Packet;
 use pnet::packet::ipv6::Ipv6Packet;
@@ -13,27 +13,15 @@ pub const IPV4_HEADER_LEN: usize = 20;
 pub const IPV6_HEADER_LEN: usize = 40;
 pub const ETHERNET_HEADER_LEN: usize = 14;
 
-#[tokio::main]
-async fn main() -> Result<(), String> {
+fn main() {
     let mut rng = thread_rng();
     let port: u16 = rng.gen_range(1024..65535);
     let dest = "99.86.91.111".parse::<IpAddr>().unwrap();
-    //let pi = "192.168.1.3".parse::<IpAddr>().unwrap();
     let ports: Vec<u16> = vec![80, 443, 100];
     let mut socket = get_socket(dest).unwrap();
     let (interface, iface_ip) = get_interface("en0");
-
-    match iface_ip {
-        IpAddr::V4(_) => {
-            send_packets_ipv4(&mut socket, ports, port, dest, iface_ip);
-        }
-        IpAddr::V6(_) => {
-            send_packets_ipv6(&mut socket, ports, port, dest, iface_ip);
-        }
-    }
+    send_packets(&mut socket, ports, port, dest, iface_ip);
     receive_packets(interface, port);
-
-    Ok(())
 }
 
 fn get_socket(destination: IpAddr) -> Result<TransportSender, String> {
@@ -45,58 +33,46 @@ fn get_socket(destination: IpAddr) -> Result<TransportSender, String> {
             ) {
                 Ok(ts)
             } else {
-                panic!("cant get socket v4");
+                panic!(
+                    "Failed to create socket for IPv4 destination: {:?}",
+                    destination
+                );
             }
         }
         IpAddr::V6(_) => {
-            let (ts, mut _tr) = transport::transport_channel(
-                4096,
-                TransportChannelType::Layer4(TransportProtocol::Ipv6(IpNextHeaderProtocols::Tcp)),
-            )
-            .unwrap();
             if let Ok((ts, _tr)) = transport::transport_channel(
                 4096,
                 TransportChannelType::Layer4(TransportProtocol::Ipv6(IpNextHeaderProtocols::Tcp)),
             ) {
                 Ok(ts)
             } else {
-                panic!("cant get socket v6");
+                panic!(
+                    "Failed to create socket for IPv6 destination: {:?}",
+                    destination
+                );
             }
         }
     }
 }
 
-fn send_packets_ipv4(
+fn send_packets(
     ts: &mut TransportSender,
     ports: Vec<u16>,
     source_port: u16,
     dest_ip: std::net::IpAddr,
     source_ip: std::net::IpAddr,
 ) {
-    for dest_port in ports {
-        let mut vec: Vec<u8> = vec![0; 66];
-        let mut tcp_packet =
-            MutableTcpPacket::new(&mut vec[(ETHERNET_HEADER_LEN + IPV4_HEADER_LEN)..]).unwrap();
-        build_syn_packet(&mut tcp_packet, source_ip, dest_ip, source_port, dest_port);
-        let tcp_packet = TcpPacket::new(tcp_packet.packet()).unwrap();
-        let _ = ts.send_to(tcp_packet, dest_ip.to_string().parse::<IpAddr>().unwrap());
-    }
-}
-
-fn send_packets_ipv6(
-    ts: &mut TransportSender,
-    ports: Vec<u16>,
-    source_port: u16,
-    dest_ip: std::net::IpAddr,
-    source_ip: std::net::IpAddr,
-) {
+    let header_length = match dest_ip {
+        IpAddr::V4(_) => IPV4_HEADER_LEN,
+        IpAddr::V6(_) => IPV6_HEADER_LEN,
+    };
     for dest_port in ports {
         let mut vec: Vec<u8> = vec![0; 86];
         let mut tcp_packet =
-            MutableTcpPacket::new(&mut vec[(ETHERNET_HEADER_LEN + IPV6_HEADER_LEN)..]).unwrap();
+            MutableTcpPacket::new(&mut vec[(ETHERNET_HEADER_LEN + header_length)..]).unwrap();
         build_syn_packet(&mut tcp_packet, source_ip, dest_ip, source_port, dest_port);
         let tcp_packet = TcpPacket::new(tcp_packet.packet()).unwrap();
-        let _ = ts.send_to(tcp_packet, dest_ip.to_string().parse::<IpAddr>().unwrap());
+        let _ = ts.send_to(tcp_packet, dest_ip);
     }
 }
 
