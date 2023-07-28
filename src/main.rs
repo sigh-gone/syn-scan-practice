@@ -17,7 +17,7 @@ pub const ETHERNET_HEADER_LEN: usize = 14;
 fn main() {
     let mut rng = thread_rng();
     let port: u16 = rng.gen_range(10024..65535);
-    let dest = "99.86.91.111".parse::<IpAddr>().unwrap();
+    let dest = "127.0.0.111".parse::<IpAddr>().unwrap();
     let ports: Vec<u16> = vec![80, 443, 100];
     let mut socket = get_socket(dest).unwrap();
     let (interface, iface_ip) = get_interface("en0");
