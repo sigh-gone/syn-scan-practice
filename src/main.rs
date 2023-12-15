@@ -214,15 +214,13 @@ send sockets
  */
 
 fn send_packets(config: &Config, mut sender: TransportSender) {
-    let header_length = match config.destination_ip {
-        IpAddr::V4(_) => IPV4_HEADER_LEN,
-        IpAddr::V6(_) => IPV6_HEADER_LEN,
-    };
-
     for destination_port in config.ports_to_scan.iter() {
-        let mut vec: Vec<u8> = vec![0; ETHERNET_HEADER_LEN + header_length + 86];
+        //get buffer to send
+        let mut vec: Vec<u8> = get_buffer(config);
+        //create packet
         let mut tcp_packet =
             MutableTcpPacket::new(&mut vec[..]).expect("Failed to create mutable TCP packet");
+        //build packet
         build_packet(
             &mut tcp_packet,
             config.interface_ip,
@@ -232,6 +230,7 @@ fn send_packets(config: &Config, mut sender: TransportSender) {
             true,
         );
 
+        //send packet
         if let Err(e) = sender.send_to(tcp_packet.to_immutable(), config.destination_ip) {
             eprintln!("Error sending packet: {}", e);
         } else {
@@ -241,6 +240,7 @@ fn send_packets(config: &Config, mut sender: TransportSender) {
             );
         }
     }
+    //sleep to change the all_sent flag
     thread::sleep(config.wait_after_send);
     config.all_sent.store(true, Ordering::SeqCst)
 }
@@ -255,16 +255,24 @@ fn receive_packets(
     mut sender: TransportSender,
     mut rx: Box<dyn DataLinkReceiver>,
 ) {
+    //loops over received packets, may not be all our packets
     loop {
+        //we got a packet
         match rx.next() {
+            //we got a packet
             Ok(packet) => {
+                //Build from bottom up the stack, starting with ethernet
                 let eth_packet = EthernetPacket::new(packet).unwrap();
+                //get the type of packet riding on ethernet packet
                 match eth_packet.get_ethertype() {
+                    //type of IPv4, we want this
                     EtherTypes::Ipv4 => {
                         let ipv4_packet = Ipv4Packet::new(eth_packet.payload()).unwrap();
+                        //if next layer up isn't tcp, we don't care
                         if ipv4_packet.get_next_level_protocol() != IpNextHeaderProtocols::Tcp {
                             continue;
                         }
+                        //get buffer to have a lifetime outside the function, done for ownership reasons
                         let mut buffer = get_buffer(config);
                         let rst_packet = handle_tcp(
                             ipv4_packet.payload(),
@@ -275,11 +283,15 @@ fn receive_packets(
                         .expect("handle tcp failed");
                         let _ = sender.send_to(rst_packet, config.destination_ip);
                     }
+                    //type of IPv6, we want this
                     EtherTypes::Ipv6 => {
                         let ipv6_packet = Ipv6Packet::new(eth_packet.payload()).unwrap();
+
+                        //if next layer up isn't tcp, we don't care
                         if ipv6_packet.get_next_header() != IpNextHeaderProtocols::Tcp {
                             continue;
                         }
+                        //get buffer to have a lifetime outside the function, done for ownership reasons
                         let mut buffer = get_buffer(config);
                         let rst_packet = handle_tcp(
                             ipv6_packet.payload(),
@@ -296,10 +308,12 @@ fn receive_packets(
                     }
                 }
             }
+            //print out if there is an error receiving a packet
             Err(e) => {
                 println!("error while receiving packet: {:?}", e)
             }
         }
+        //check if all_sent flag is true
         if config.all_sent.load(Ordering::SeqCst) {
             break;
         }
@@ -312,14 +326,20 @@ fn handle_tcp<'a>(
     ip_addr: IpAddr,
     buffer: &'a mut [u8],
 ) -> Result<MutableTcpPacket<'a>, String> {
+    //get ip packet tcp payload
     let tcp_packet = TcpPacket::new(ip_payload).unwrap();
+
+    //build out mutable packet
     let mut rst_packet =
         MutableTcpPacket::new(buffer).expect("Failed to create mutable TCP packet");
+    //check whether the port is aimed at our ephemeral port, and is a Syn/Ack Packet
     if tcp_packet.get_destination() == config.source_port
         && tcp_packet.get_flags() == TcpFlags::SYN | TcpFlags::ACK
     {
+        //print out its open
         println!("port {} open on host {}", tcp_packet.get_source(), ip_addr);
 
+        //build out return packet
         build_packet(
             &mut rst_packet,
             config.interface_ip,
@@ -328,10 +348,12 @@ fn handle_tcp<'a>(
             tcp_packet.get_source(),
             false,
         );
+        //port is closed
     } else if tcp_packet.get_destination() == config.source_port
         && tcp_packet.get_flags() == TcpFlags::RST
     {
         println!("{:?}, closed", tcp_packet.get_source());
+        //we dont know what the flag is, but we are displaying it anyways
     } else if tcp_packet.get_destination() == config.source_port {
         println!("misc flag {:?}", tcp_packet.get_flags());
     }
