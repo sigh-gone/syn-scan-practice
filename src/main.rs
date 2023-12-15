@@ -59,8 +59,9 @@ fn main() {
     //config
     let config: Config = Config::new(destination_ip, ports_to_scan, interface_ip);
 
-    //sending to another thread
-    let config_clone = config.clone();
+    //create the arcs to send among other threads
+    let config_arc = Arc::new(config);
+    let mut config_arc_clone = config_arc.clone();
 
     //set up senders for sender syn packets (sender) and rst packets (receiver)
     let syn_sender: TransportSender =
@@ -77,12 +78,12 @@ fn main() {
 
     //receiving thread
     let rx_thread = thread::spawn(move || {
-        receive_packets(config_clone, rst_sender, rx);
+        receive_packets(&config_arc, rst_sender, rx);
     });
 
     //sending thread
     let tx_thread = thread::spawn(move || {
-        send_packets(config, syn_sender);
+        send_packets(&config_arc_clone, syn_sender);
     });
 
     //joining the handles
@@ -207,13 +208,13 @@ send sockets
 
  */
 
-fn send_packets(config: Config, mut sender: TransportSender) {
+fn send_packets(config: &Config, mut sender: TransportSender) {
     let header_length = match config.destination_ip {
         IpAddr::V4(_) => IPV4_HEADER_LEN,
         IpAddr::V6(_) => IPV6_HEADER_LEN,
     };
 
-    for destination_port in config.ports_to_scan {
+    for destination_port in config.ports_to_scan.iter() {
         let mut vec: Vec<u8> = vec![0; ETHERNET_HEADER_LEN + header_length + 86];
         let mut tcp_packet =
             MutableTcpPacket::new(&mut vec[..]).expect("Failed to create mutable TCP packet");
@@ -222,7 +223,7 @@ fn send_packets(config: Config, mut sender: TransportSender) {
             config.interface_ip,
             config.destination_ip,
             config.source_port,
-            destination_port,
+            *destination_port,
             true,
         );
 
@@ -241,7 +242,11 @@ fn send_packets(config: Config, mut sender: TransportSender) {
 receive packets
 
  */
-fn receive_packets(config: Config, mut sender: TransportSender, mut rx: Box<dyn DataLinkReceiver>) {
+fn receive_packets(
+    config: &Config,
+    mut sender: TransportSender,
+    mut rx: Box<dyn DataLinkReceiver>,
+) {
     loop {
         //doesnt get in here
         match rx.next() {
