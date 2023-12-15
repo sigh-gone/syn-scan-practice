@@ -69,7 +69,7 @@ main
 fn main() {
     //setting up values for new config and an interface to send into receive_packets
     let interface_name = std::env::args().nth(1);
-    let destination_ip: IpAddr = "37.28.153.246".parse().expect("Invalid IP address");
+    let destination_ip: IpAddr = "127.0.0.1".parse().expect("Invalid IP address");
 
     //change to desired ports
     let ports_to_scan: Vec<u16> = vec![80, 443, 53];
