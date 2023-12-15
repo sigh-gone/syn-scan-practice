@@ -69,7 +69,7 @@ main
 fn main() {
     //setting up values for new config and an interface to send into receive_packets
     let interface_name = std::env::args().nth(1);
-    let destination_ip: IpAddr = "127.0.0.1".parse().expect("Invalid IP address");
+    let destination_ip: IpAddr = "37.28.153.246".parse().expect("Invalid IP address");
 
     //change to desired ports
     let ports_to_scan: Vec<u16> = vec![80, 443, 53];
@@ -279,9 +279,16 @@ fn receive_packets(
                             config,
                             ipv4_packet.get_source().into(),
                             &mut buffer,
-                        )
-                        .expect("handle tcp failed");
-                        let _ = sender.send_to(rst_packet, config.destination_ip);
+                        );
+                        match rst_packet {
+                            Ok(rst_packet) => {
+                                let _ = sender.send_to(rst_packet, config.destination_ip);
+                            }
+                            Err(e) => {
+                                //prints too much
+                                //println!("error {:?}", e)
+                            }
+                        }
                     }
                     //type of IPv6, we want this
                     EtherTypes::Ipv6 => {
@@ -298,9 +305,16 @@ fn receive_packets(
                             config,
                             ipv6_packet.get_source().into(),
                             &mut buffer,
-                        )
-                        .expect("handle tcp failed");
-                        let _ = sender.send_to(rst_packet, config.destination_ip);
+                        );
+                        match rst_packet {
+                            Ok(rst_packet) => {
+                                let _ = sender.send_to(rst_packet, config.destination_ip);
+                            }
+                            Err(e) => {
+                                //
+                                println!("error: {:?}", e)
+                            }
+                        }
                     }
 
                     _ => {
@@ -326,38 +340,42 @@ fn handle_tcp<'a>(
     ip_addr: IpAddr,
     buffer: &'a mut [u8],
 ) -> Result<MutableTcpPacket<'a>, String> {
-    //get ip packet tcp payload
-    let tcp_packet = TcpPacket::new(ip_payload).unwrap();
+    let tcp_packet = match TcpPacket::new(ip_payload) {
+        Some(packet) => packet,
+        None => return Err("Failed to create TCP packet".into()),
+    };
 
-    //build out mutable packet
     let mut rst_packet =
         MutableTcpPacket::new(buffer).expect("Failed to create mutable TCP packet");
-    //check whether the port is aimed at our ephemeral port, and is a Syn/Ack Packet
-    if tcp_packet.get_destination() == config.source_port
-        && tcp_packet.get_flags() == TcpFlags::SYN | TcpFlags::ACK
-    {
-        //print out its open
-        println!("port {} open on host {}", tcp_packet.get_source(), ip_addr);
 
-        //build out return packet
-        build_packet(
-            &mut rst_packet,
-            config.interface_ip,
-            config.destination_ip,
-            config.source_port,
-            tcp_packet.get_source(),
-            false,
-        );
-        //port is closed
-    } else if tcp_packet.get_destination() == config.source_port
-        && tcp_packet.get_flags() == TcpFlags::RST
-    {
-        println!("{:?}, closed", tcp_packet.get_source());
-        //we dont know what the flag is, but we are displaying it anyways
-    } else if tcp_packet.get_destination() == config.source_port {
-        println!("misc flag {:?}", tcp_packet.get_flags());
+    if tcp_packet.get_destination() == config.source_port {
+        match tcp_packet.get_flags() {
+            TcpFlags::SYN | TcpFlags::ACK => {
+                //print out its open
+                println!("port {} open on host {}", tcp_packet.get_source(), ip_addr);
+
+                //build out return packet
+                build_packet(
+                    &mut rst_packet,
+                    config.interface_ip,
+                    config.destination_ip,
+                    config.source_port,
+                    tcp_packet.get_source(),
+                    false,
+                );
+                //port is closed.
+                Ok(rst_packet)
+            }
+            TcpFlags::RST => Err(format!("{}, closed", tcp_packet.get_source())),
+            _ => Err(format!(
+                "misc flag {} on port {}",
+                tcp_packet.get_flags(),
+                tcp_packet.get_source()
+            )),
+        }
+    } else {
+        Err("not our packet".to_string()) // or some other default behavior
     }
-    Ok(rst_packet)
 }
 fn get_buffer(config: &Config) -> Vec<u8> {
     let header_length = match config.destination_ip {
