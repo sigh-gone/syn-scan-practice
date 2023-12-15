@@ -4,21 +4,23 @@ usings
 
  */
 use pnet::datalink::{Channel, DataLinkReceiver, NetworkInterface};
-use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
-use pnet::packet::ip::IpNextHeaderProtocols;
-use pnet::packet::ipv4::Ipv4Packet;
-use pnet::packet::ipv6::Ipv6Packet;
-use pnet::packet::tcp::{ipv4_checksum, ipv6_checksum, TcpOption};
-use pnet::packet::tcp::{MutableTcpPacket, TcpFlags, TcpPacket}; //TcpOption
-use pnet::packet::Packet;
+use pnet::packet::{
+    ethernet::{EtherTypes, EthernetPacket},
+    ip::IpNextHeaderProtocols,
+    ipv4::Ipv4Packet,
+    ipv6::Ipv6Packet,
+    tcp::{ipv4_checksum, ipv6_checksum, MutableTcpPacket, TcpFlags, TcpOption, TcpPacket},
+    Packet,
+};
 use pnet::transport::{self, TransportChannelType, TransportProtocol, TransportSender};
-use rand::rngs::ThreadRng;
-use rand::{thread_rng, Rng};
-use std::net::IpAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
+use rand::{rngs::ThreadRng, thread_rng, Rng};
+use std::{
+    net::IpAddr,
+    sync::atomic::{AtomicBool, Ordering},
+    sync::Arc,
+    thread,
+    time::Duration,
+};
 
 /*
 
@@ -61,9 +63,9 @@ fn main() {
 
     //create the arcs to send among other threads
     let config_arc = Arc::new(config);
-    let mut config_arc_clone = config_arc.clone();
+    let config_arc_clone = config_arc.clone();
 
-    //set up senders for sender syn packets (sender) and rst packets (receiver)
+    //set up senders for sender syn packets (sender) and rst packets to close the connection (receiver)
     let syn_sender: TransportSender =
         get_socket(destination_ip).expect("Failed to create tx_sender");
     let rst_sender: TransportSender =
@@ -141,7 +143,7 @@ fn get_interface(interface_name: Option<String>) -> (NetworkInterface, IpAddr) {
         std::process::exit(1);
     };
 
-    let interfaces_name_match = |iface: &NetworkInterface| iface.name == interface_name;
+    let interfaces_name_match = |interface: &NetworkInterface| interface.name == interface_name;
 
     if let Some(interface) = interfaces.into_iter().find(interfaces_name_match) {
         match interface.ips.first() {
