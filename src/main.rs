@@ -46,6 +46,20 @@ pub struct Config {
     wait_after_send: Duration,
     all_sent: Arc<AtomicBool>,
 }
+impl Config {
+    pub fn new(destination_ip: IpAddr, ports_to_scan: Vec<u16>, interface_ip: IpAddr) -> Self {
+        let mut rng: ThreadRng = thread_rng();
+        let source_port: u16 = rng.gen_range(10024..65535);
+        Self {
+            interface_ip,
+            source_port,
+            destination_ip,
+            wait_after_send: Duration::from_millis(500 * ports_to_scan.len() as u64),
+            ports_to_scan,
+            all_sent: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
 
 /*
 
@@ -56,6 +70,8 @@ fn main() {
     //setting up values for new config and an interface to send into receive_packets
     let interface_name = std::env::args().nth(1);
     let destination_ip: IpAddr = "127.0.0.1".parse().expect("Invalid IP address");
+
+    //change to desired ports
     let ports_to_scan: Vec<u16> = vec![80, 443, 53];
     let (interface, interface_ip): (NetworkInterface, IpAddr) = get_interface(interface_name);
 
@@ -94,22 +110,6 @@ fn main() {
     let _ = tx_thread.join();
 }
 
-//build out config
-impl Config {
-    pub fn new(destination_ip: IpAddr, ports_to_scan: Vec<u16>, interface_ip: IpAddr) -> Self {
-        let mut rng: ThreadRng = thread_rng();
-        let source_port: u16 = rng.gen_range(10024..65535);
-        Self {
-            interface_ip,
-            source_port,
-            destination_ip,
-            wait_after_send: Duration::from_millis(500 * ports_to_scan.len() as u64),
-            ports_to_scan,
-            all_sent: Arc::new(AtomicBool::new(false)),
-        }
-    }
-}
-
 //build out socket
 fn get_socket(destination: IpAddr) -> Result<TransportSender, String> {
     match destination {
@@ -138,6 +138,7 @@ fn get_socket(destination: IpAddr) -> Result<TransportSender, String> {
 fn get_interface(interface_name: Option<String>) -> (NetworkInterface, IpAddr) {
     let interfaces = pnet::datalink::interfaces();
 
+    //checks if interface exists, and if not it lists out available interfaces
     let Some(interface_name) = interface_name else {
         println!("Interface names available:");
         { interfaces.iter() }.for_each(|iface| println!("{}", iface.name));
@@ -173,8 +174,8 @@ fn build_packet(
     dest_port: u16,
     syn: bool,
 ) {
-    tcp_packet.set_source(source_port);
-    tcp_packet.set_destination(dest_port);
+    tcp_packet.set_source(source_port); //ephemeral port
+    tcp_packet.set_destination(dest_port); //port being probed
     tcp_packet.set_sequence(0);
     tcp_packet.set_window(64240);
     tcp_packet.set_data_offset(8);
@@ -187,6 +188,7 @@ fn build_packet(
         TcpOption::nop(),
         TcpOption::wscale(7),
     ]);
+    //if syn, set syn flag, if rst set rst flag
     if syn {
         tcp_packet.set_flags(TcpFlags::SYN);
     } else {
@@ -200,7 +202,7 @@ fn build_packet(
         (IpAddr::V6(src), IpAddr::V6(dest)) => {
             ipv6_checksum(&tcp_packet.to_immutable(), &src, &dest)
         }
-        _ => return, // TODO: Panic?
+        _ => panic!("cant create socket in get_socket"),
     };
     tcp_packet.set_checksum(checksum);
 }
@@ -254,7 +256,6 @@ fn receive_packets(
     mut rx: Box<dyn DataLinkReceiver>,
 ) {
     loop {
-        //doesnt get in here
         match rx.next() {
             Ok(packet) => {
                 let eth_packet = EthernetPacket::new(packet).unwrap();
