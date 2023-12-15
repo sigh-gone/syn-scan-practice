@@ -1,4 +1,4 @@
-use pnet::datalink::{Channel, NetworkInterface};
+use pnet::datalink::{Channel, DataLinkReceiver, NetworkInterface};
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::ipv4::Ipv4Packet;
@@ -6,16 +6,16 @@ use pnet::packet::ipv6::Ipv6Packet;
 use pnet::packet::tcp::{ipv4_checksum, ipv6_checksum, TcpOption};
 use pnet::packet::tcp::{MutableTcpPacket, TcpFlags, TcpPacket}; //TcpOption
 use pnet::packet::Packet;
-use pnet::transport::{self, TransportChannelType, TransportProtocol, TransportSender};
+use pnet::transport::{
+    self, TransportChannelType, TransportProtocol, TransportReceiver, TransportSender,
+};
 use rand::rngs::ThreadRng;
 use rand::{thread_rng, Rng};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::ops::Deref;
-use std::ptr::eq;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub const IPV4_HEADER_LEN: usize = 20;
 pub const IPV6_HEADER_LEN: usize = 40;
@@ -29,46 +29,42 @@ pub struct Config {
     source_ip: IpAddr,
     destination_ip: IpAddr,
     ports_to_scan: Vec<u16>,
-    all_sent: Arc<Mutex<bool>>,
+    timeout: Duration,
 }
-
-/*
-impl Clone for Config {
-    fn clone(&self) -> Self {
-        Self {
-            interface: self.interface.clone(),
-            interface_ip: self.interface_ip,
-            source_port: self.source_port,
-            source_ip: self.source_ip,
-            destination_ip: self.destination_ip,
-            ports_to_scan: self.ports_to_scan.clone(),
-            all_sent: self.all_sent.clone(),
-        }
-    }
-}*/
 
 fn main() {
     let destination_ip: IpAddr = "54.230.18.118".parse().expect("Invalid IP address");
     let ports_to_scan: Vec<u16> = vec![80, 443, 100];
     let (interface, source_ip): (NetworkInterface, IpAddr) = get_interface("en0");
-    let mut config: Config = Config::new(destination_ip, ports_to_scan, source_ip);
-    let is_receiving: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
-    let is_receiving_clone = is_receiving.clone();
+    let timeout = Duration::from_secs(1);
+    let config: Config = Config::new(destination_ip, ports_to_scan, source_ip, timeout);
     let config_clone = config.clone();
-    let tx_sender: TransportSender = get_socket(destination_ip).expect("Failed to create socket");
-    let rx_sender: TransportSender = get_socket(destination_ip).expect("Failed to create socket");
+
+    let (tx, rx): (TransportSender, TransportReceiver) =
+        get_socket(destination_ip).expect("Failed to create socket");
+    let (rx_sender, _): (TransportSender, TransportReceiver) =
+        get_socket(destination_ip).expect("Failed to create socket");
+
+    let (mut _tx, mut rx) = match pnet::datalink::channel(&interface, Default::default()) {
+        Ok(Channel::Ethernet(tx, rx)) => (tx, rx),
+        Ok(_) => panic!("Unknown channel type"),
+        Err(e) => panic!("Error happened {}", e),
+    };
+
     let h = thread::spawn(move || {
-        receive_packets(config_clone, tx_sender, interface, is_receiving_clone);
+        receive_packets(config_clone, rx_sender, rx);
     });
-    while !is_receiving.load(Ordering::SeqCst) {
-        thread::sleep(Duration::from_millis(100));
-    }
-    send_packets(config, rx_sender);
+    send_packets(config, tx);
     let _ = h.join();
 }
 
 impl Config {
-    pub fn new(destination_ip: IpAddr, ports_to_scan: Vec<u16>, source_ip: IpAddr) -> Self {
+    pub fn new(
+        destination_ip: IpAddr,
+        ports_to_scan: Vec<u16>,
+        source_ip: IpAddr,
+        timeout: Duration,
+    ) -> Self {
         let mut rng: ThreadRng = thread_rng();
         let source_port: u16 = rng.gen_range(10024..65535);
         Self {
@@ -77,28 +73,28 @@ impl Config {
             source_ip,
             destination_ip,
             ports_to_scan,
-            all_sent: Arc::new(Mutex::new(false)),
+            timeout,
         }
     }
 }
 
-fn get_socket(destination: IpAddr) -> Result<TransportSender, String> {
+fn get_socket(destination: IpAddr) -> Result<(TransportSender, TransportReceiver), String> {
     match destination {
         IpAddr::V4(_) => {
             match transport::transport_channel(
                 4096,
                 TransportChannelType::Layer4(TransportProtocol::Ipv4(IpNextHeaderProtocols::Tcp)),
             ) {
-                Ok((ts, tr)) => Ok(ts),
+                Ok((ts, tr)) => Ok((ts, tr)),
                 Err(e) => Err(format!("{}", e)),
             }
         }
         IpAddr::V6(_) => {
-            if let Ok((ts, _tr)) = transport::transport_channel(
+            if let Ok((ts, tr)) = transport::transport_channel(
                 4096,
                 TransportChannelType::Layer4(TransportProtocol::Ipv6(IpNextHeaderProtocols::Tcp)),
             ) {
-                Ok(ts)
+                Ok((ts, tr))
             } else {
                 panic!(
                     "Failed to create socket for IPv6 destination: {:?}",
@@ -134,9 +130,6 @@ fn send_packets(config: Config, mut sender: TransportSender) {
             println!("sent");
         }
     }
-
-    let mut all_sent = config.all_sent.lock().unwrap();
-    *all_sent = true;
 }
 
 fn get_interface(interface_name: &str) -> (NetworkInterface, IpAddr) {
@@ -162,27 +155,12 @@ fn get_interface(interface_name: &str) -> (NetworkInterface, IpAddr) {
     }
 }
 
-fn receive_packets(
-    config: Config,
-    mut sender: TransportSender,
-    interface: NetworkInterface,
-    is_receiving: Arc<AtomicBool>,
-) {
-    let (mut _tx, mut rx) = match pnet::datalink::channel(&interface, Default::default()) {
-        Ok(Channel::Ethernet(tx, rx)) => (tx, rx),
-        Ok(_) => panic!("Unknown channel type"),
-        Err(e) => panic!("Error happened {}", e),
-    };
-    while !*config
-        .all_sent
-        .lock()
-        .unwrap_or_else(|e| panic!("{}, cant acquire lock", e))
-    {
-        is_receiving.store(true, Ordering::SeqCst);
+fn receive_packets(config: Config, mut sender: TransportSender, mut rx: Box<dyn DataLinkReceiver>) {
+    let start = Instant::now();
+    loop {
         //doesnt get in here
         match rx.next() {
             Ok(packet) => {
-                println!("in");
                 let eth_packet = EthernetPacket::new(packet).unwrap();
                 match eth_packet.get_ethertype() {
                     EtherTypes::Ipv4 => {
@@ -193,14 +171,17 @@ fn receive_packets(
 
                         let tcp_packet = TcpPacket::new(ipv4_packet.payload()).unwrap();
                         if tcp_packet.get_destination() == config.source_port {
-                            if (tcp_packet.get_flags() & (TcpFlags::SYN | TcpFlags::ACK))
+                            /*if (tcp_packet.get_flags() & (TcpFlags::SYN | TcpFlags::ACK))
                                 == (TcpFlags::SYN | TcpFlags::ACK)
+                            {*/
+                            if tcp_packet.get_flags()
+                                == pnet_packet::tcp::TcpFlags::SYN | pnet_packet::tcp::TcpFlags::ACK
                             {
-                                println!("{:?} open", tcp_packet.get_source());
                                 let header_length = match config.destination_ip {
                                     IpAddr::V4(_) => IPV4_HEADER_LEN,
                                     IpAddr::V6(_) => IPV6_HEADER_LEN,
                                 };
+                                println!("{:?} open", tcp_packet.get_source());
                                 let mut vec: Vec<u8> =
                                     vec![0; ETHERNET_HEADER_LEN + header_length + 86];
                                 let mut rst_packet = MutableTcpPacket::new(&mut vec[..])
@@ -238,12 +219,17 @@ fn receive_packets(
                             }
                         }
                     }
-                    _ => continue,
+                    _ => {
+                        continue;
+                    }
                 }
             }
             Err(e) => {
                 println!("error while receiving packet: {:?}", e)
             }
+        }
+        if Instant::now().duration_since(start) > config.timeout {
+            break;
         }
     }
 }
