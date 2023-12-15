@@ -40,7 +40,7 @@ pub struct Config {
     source_port: u16,
     destination_ip: IpAddr,
     ports_to_scan: Vec<u16>,
-    timeout: Duration,
+    wait_after_send: Duration,
     all_sent: Arc<AtomicBool>,
 }
 
@@ -51,14 +51,13 @@ main
  */
 fn main() {
     //setting up values for new config and an interface to send into receive_packets
+    //change destination ip for other ip addresses
     let destination_ip: IpAddr = "127.0.0.1".parse().expect("Invalid IP address");
     let ports_to_scan: Vec<u16> = vec![80, 443, 53];
-    let (interface, source_ip): (NetworkInterface, IpAddr) = get_interface("en0");
-    let time_to_send = 500 * ports_to_scan.len() as u64;
-    let timeout: Duration = Duration::from_millis(time_to_send);
+    let (interface, interface_ip): (NetworkInterface, IpAddr) = get_interface("en0");
 
     //config
-    let config: Config = Config::new(destination_ip, ports_to_scan, source_ip, timeout);
+    let config: Config = Config::new(destination_ip, ports_to_scan, interface_ip);
 
     //sending to another thread
     let config_clone = config.clone();
@@ -93,20 +92,15 @@ fn main() {
 
 //build out config
 impl Config {
-    pub fn new(
-        destination_ip: IpAddr,
-        ports_to_scan: Vec<u16>,
-        source_ip: IpAddr,
-        timeout: Duration,
-    ) -> Self {
+    pub fn new(destination_ip: IpAddr, ports_to_scan: Vec<u16>, interface_ip: IpAddr) -> Self {
         let mut rng: ThreadRng = thread_rng();
         let source_port: u16 = rng.gen_range(10024..65535);
         Self {
-            interface_ip: source_ip,
+            interface_ip,
             source_port,
             destination_ip,
+            wait_after_send: Duration::from_millis(500 * ports_to_scan.len() as u64),
             ports_to_scan,
-            timeout,
             all_sent: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -231,7 +225,7 @@ fn send_packets(config: Config, mut sender: TransportSender) {
             println!("sent {:?}", destination_port);
         }
     }
-    thread::sleep(config.timeout);
+    thread::sleep(config.wait_after_send);
     config.all_sent.store(true, Ordering::SeqCst)
 }
 
