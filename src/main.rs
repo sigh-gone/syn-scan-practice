@@ -14,7 +14,7 @@ use pnet::packet::Packet;
 use pnet::transport::{self, TransportChannelType, TransportProtocol, TransportSender};
 use rand::rngs::ThreadRng;
 use rand::{thread_rng, Rng};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -181,20 +181,16 @@ fn build_packet(
         tcp_packet.set_flags(TcpFlags::RST);
     }
 
-    match source_ip {
-        IpAddr::V4(src) => {
-            if let Ok(dest_ip) = dest_ip.to_string().parse::<Ipv4Addr>() {
-                let checksum = ipv4_checksum(&tcp_packet.to_immutable(), &src, &dest_ip);
-                tcp_packet.set_checksum(checksum);
-            }
+    let checksum = match (source_ip, dest_ip) {
+        (IpAddr::V4(src), IpAddr::V4(dest)) => {
+            ipv4_checksum(&tcp_packet.to_immutable(), &src, &dest)
         }
-        IpAddr::V6(src) => {
-            if let Ok(dest_ip) = dest_ip.to_string().parse::<Ipv6Addr>() {
-                let checksum = ipv6_checksum(&tcp_packet.to_immutable(), &src, &dest_ip);
-                tcp_packet.set_checksum(checksum);
-            }
+        (IpAddr::V6(src), IpAddr::V6(dest)) => {
+            ipv6_checksum(&tcp_packet.to_immutable(), &src, &dest)
         }
-    }
+        _ => return, // TODO: Panic?
+    };
+    tcp_packet.set_checksum(checksum);
 }
 
 /*
