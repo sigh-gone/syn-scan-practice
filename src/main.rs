@@ -311,8 +311,8 @@ fn receive_packets(
                                 let _ = sender.send_to(rst_packet, config.destination_ip);
                             }
                             Err(e) => {
-                                //
-                                println!("error: {:?}", e)
+                                //oops
+                                //println!("error: {:?}", e)
                             }
                         }
                     }
