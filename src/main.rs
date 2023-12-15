@@ -30,6 +30,7 @@ pub struct Config {
     destination_ip: IpAddr,
     ports_to_scan: Vec<u16>,
     timeout: Duration,
+    all_sent: Arc<AtomicBool>,
 }
 
 fn main() {
@@ -40,12 +41,10 @@ fn main() {
     let config: Config = Config::new(destination_ip, ports_to_scan, source_ip, timeout);
     let config_clone = config.clone();
 
-    let (tx, rx): (TransportSender, TransportReceiver) =
-        get_socket(destination_ip).expect("Failed to create socket");
-    let (rx_sender, _): (TransportSender, TransportReceiver) =
-        get_socket(destination_ip).expect("Failed to create socket");
+    let tx: TransportSender = get_socket(destination_ip).expect("Failed to create socket");
+    let rx_sender: TransportSender = get_socket(destination_ip).expect("Failed to create socket");
 
-    let (mut _tx, mut rx) = match pnet::datalink::channel(&interface, Default::default()) {
+    let (mut _tx, rx) = match pnet::datalink::channel(&interface, Default::default()) {
         Ok(Channel::Ethernet(tx, rx)) => (tx, rx),
         Ok(_) => panic!("Unknown channel type"),
         Err(e) => panic!("Error happened {}", e),
@@ -74,18 +73,19 @@ impl Config {
             destination_ip,
             ports_to_scan,
             timeout,
+            all_sent: Arc::new(AtomicBool::new(false)),
         }
     }
 }
 
-fn get_socket(destination: IpAddr) -> Result<(TransportSender, TransportReceiver), String> {
+fn get_socket(destination: IpAddr) -> Result<TransportSender, String> {
     match destination {
         IpAddr::V4(_) => {
             match transport::transport_channel(
                 4096,
                 TransportChannelType::Layer4(TransportProtocol::Ipv4(IpNextHeaderProtocols::Tcp)),
             ) {
-                Ok((ts, tr)) => Ok((ts, tr)),
+                Ok((ts, tr)) => Ok(ts),
                 Err(e) => Err(format!("{}", e)),
             }
         }
@@ -94,7 +94,7 @@ fn get_socket(destination: IpAddr) -> Result<(TransportSender, TransportReceiver
                 4096,
                 TransportChannelType::Layer4(TransportProtocol::Ipv6(IpNextHeaderProtocols::Tcp)),
             ) {
-                Ok((ts, tr))
+                Ok(ts)
             } else {
                 panic!(
                     "Failed to create socket for IPv6 destination: {:?}",
@@ -130,6 +130,7 @@ fn send_packets(config: Config, mut sender: TransportSender) {
             println!("sent");
         }
     }
+    config.all_sent.store(true, Ordering::SeqCst)
 }
 
 fn get_interface(interface_name: &str) -> (NetworkInterface, IpAddr) {
@@ -162,6 +163,7 @@ fn receive_packets(config: Config, mut sender: TransportSender, mut rx: Box<dyn 
         match rx.next() {
             Ok(packet) => {
                 let eth_packet = EthernetPacket::new(packet).unwrap();
+
                 match eth_packet.get_ethertype() {
                     EtherTypes::Ipv4 => {
                         let ipv4_packet = Ipv4Packet::new(eth_packet.payload()).unwrap();
@@ -171,9 +173,6 @@ fn receive_packets(config: Config, mut sender: TransportSender, mut rx: Box<dyn 
 
                         let tcp_packet = TcpPacket::new(ipv4_packet.payload()).unwrap();
                         if tcp_packet.get_destination() == config.source_port {
-                            /*if (tcp_packet.get_flags() & (TcpFlags::SYN | TcpFlags::ACK))
-                                == (TcpFlags::SYN | TcpFlags::ACK)
-                            {*/
                             if tcp_packet.get_flags()
                                 == pnet_packet::tcp::TcpFlags::SYN | pnet_packet::tcp::TcpFlags::ACK
                             {
