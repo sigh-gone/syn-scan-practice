@@ -3,16 +3,18 @@
 usings
 
  */
-use pnet::datalink::{Channel, DataLinkReceiver, NetworkInterface};
-use pnet::packet::{
-    ethernet::{EtherTypes, EthernetPacket},
-    ip::IpNextHeaderProtocols,
-    ipv4::Ipv4Packet,
-    ipv6::Ipv6Packet,
-    tcp::{ipv4_checksum, ipv6_checksum, MutableTcpPacket, TcpFlags, TcpOption, TcpPacket},
-    Packet,
+use pnet::{
+    datalink::{Channel, DataLinkReceiver, NetworkInterface},
+    packet::{
+        ethernet::{EtherTypes, EthernetPacket},
+        ip::IpNextHeaderProtocols,
+        ipv4::Ipv4Packet,
+        ipv6::Ipv6Packet,
+        tcp::{ipv4_checksum, ipv6_checksum, MutableTcpPacket, TcpFlags, TcpOption, TcpPacket},
+        Packet,
+    },
+    transport::{self, TransportChannelType, TransportProtocol, TransportSender},
 };
-use pnet::transport::{self, TransportChannelType, TransportProtocol, TransportSender};
 use rand::{rngs::ThreadRng, thread_rng, Rng};
 use std::{
     net::IpAddr,
@@ -36,7 +38,6 @@ pub const ETHERNET_HEADER_LEN: usize = 14;
 config struct
 
  */
-#[derive(Clone)]
 pub struct Config {
     interface_ip: IpAddr,
     source_port: u16,
@@ -232,7 +233,10 @@ fn send_packets(config: &Config, mut sender: TransportSender) {
         if let Err(e) = sender.send_to(tcp_packet.to_immutable(), config.destination_ip) {
             eprintln!("Error sending packet: {}", e);
         } else {
-            println!("sent {:?}", destination_port);
+            println!(
+                "sent syn packet to port {} on host {}",
+                destination_port, config.destination_ip
+            );
         }
     }
     thread::sleep(config.wait_after_send);
@@ -254,66 +258,38 @@ fn receive_packets(
         match rx.next() {
             Ok(packet) => {
                 let eth_packet = EthernetPacket::new(packet).unwrap();
-
                 match eth_packet.get_ethertype() {
                     EtherTypes::Ipv4 => {
                         let ipv4_packet = Ipv4Packet::new(eth_packet.payload()).unwrap();
                         if ipv4_packet.get_next_level_protocol() != IpNextHeaderProtocols::Tcp {
                             continue;
                         }
-
-                        let tcp_packet = TcpPacket::new(ipv4_packet.payload()).unwrap();
-                        if tcp_packet.get_destination() == config.source_port
-                            && tcp_packet.get_flags() == TcpFlags::SYN | TcpFlags::ACK
-                        {
-                            let header_length = match config.destination_ip {
-                                IpAddr::V4(_) => IPV4_HEADER_LEN,
-                                IpAddr::V6(_) => IPV6_HEADER_LEN,
-                            };
-                            println!(
-                                "port {} open on host {}",
-                                tcp_packet.get_source(),
-                                ipv4_packet.get_source()
-                            );
-                            let mut vec: Vec<u8> =
-                                vec![0; ETHERNET_HEADER_LEN + header_length + 86];
-                            let mut rst_packet = MutableTcpPacket::new(&mut vec[..])
-                                .expect("Failed to create mutable TCP packet");
-
-                            build_packet(
-                                &mut rst_packet,
-                                config.interface_ip,
-                                config.destination_ip,
-                                config.source_port,
-                                tcp_packet.get_source(),
-                                false,
-                            );
-                            let _ = sender.send_to(rst_packet, config.destination_ip);
-                        } else if tcp_packet.get_destination() == config.source_port
-                            && tcp_packet.get_flags() == TcpFlags::RST
-                        {
-                            println!("{:?}, closed", tcp_packet.get_source());
-                        } else if tcp_packet.get_destination() == config.source_port {
-                            println!("extra flag {:?}", tcp_packet.get_flags());
-                        }
+                        let mut buffer = get_buffer(config);
+                        let rst_packet = handle_tcp(
+                            ipv4_packet.payload(),
+                            config,
+                            ipv4_packet.get_source().into(),
+                            &mut buffer,
+                        )
+                        .expect("handle tcp failed");
+                        let _ = sender.send_to(rst_packet, config.destination_ip);
                     }
                     EtherTypes::Ipv6 => {
                         let ipv6_packet = Ipv6Packet::new(eth_packet.payload()).unwrap();
                         if ipv6_packet.get_next_header() != IpNextHeaderProtocols::Tcp {
                             continue;
                         }
-
-                        let tcp_packet = TcpPacket::new(ipv6_packet.payload()).unwrap();
-                        if tcp_packet.get_destination() == config.source_port {
-                            if (tcp_packet.get_flags() & (TcpFlags::SYN | TcpFlags::ACK))
-                                == (TcpFlags::SYN | TcpFlags::ACK)
-                            {
-                                println!("{:?} open", tcp_packet.get_source());
-                            } else if tcp_packet.get_flags() == TcpFlags::RST {
-                                println!("closed");
-                            }
-                        }
+                        let mut buffer = get_buffer(config);
+                        let rst_packet = handle_tcp(
+                            ipv6_packet.payload(),
+                            config,
+                            ipv6_packet.get_source().into(),
+                            &mut buffer,
+                        )
+                        .expect("handle tcp failed");
+                        let _ = sender.send_to(rst_packet, config.destination_ip);
                     }
+
                     _ => {
                         continue;
                     }
@@ -327,4 +303,44 @@ fn receive_packets(
             break;
         }
     }
+}
+
+fn handle_tcp<'a>(
+    ip_payload: &[u8],
+    config: &Config,
+    ip_addr: IpAddr,
+    buffer: &'a mut [u8],
+) -> Result<MutableTcpPacket<'a>, String> {
+    let tcp_packet = TcpPacket::new(ip_payload).unwrap();
+    let mut rst_packet =
+        MutableTcpPacket::new(buffer).expect("Failed to create mutable TCP packet");
+    if tcp_packet.get_destination() == config.source_port
+        && tcp_packet.get_flags() == TcpFlags::SYN | TcpFlags::ACK
+    {
+        println!("port {} open on host {}", tcp_packet.get_source(), ip_addr);
+
+        build_packet(
+            &mut rst_packet,
+            config.interface_ip,
+            config.destination_ip,
+            config.source_port,
+            tcp_packet.get_source(),
+            false,
+        );
+    } else if tcp_packet.get_destination() == config.source_port
+        && tcp_packet.get_flags() == TcpFlags::RST
+    {
+        println!("{:?}, closed", tcp_packet.get_source());
+    } else if tcp_packet.get_destination() == config.source_port {
+        println!("misc flag {:?}", tcp_packet.get_flags());
+    }
+    Ok(rst_packet)
+}
+fn get_buffer(config: &Config) -> Vec<u8> {
+    let header_length = match config.destination_ip {
+        IpAddr::V4(_) => IPV4_HEADER_LEN,
+        IpAddr::V6(_) => IPV6_HEADER_LEN,
+    };
+    let vec: Vec<u8> = vec![0; ETHERNET_HEADER_LEN + header_length + 86];
+    vec
 }
