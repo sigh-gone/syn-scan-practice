@@ -37,9 +37,10 @@ pub struct Config {
 
 fn main() {
     //setting up values for new config and an interface to send into receive_packets
+    let interface_name = std::env::args().nth(1);
     let destination_ip: IpAddr = "127.0.0.1".parse().expect("Invalid IP address");
     let ports_to_scan: Vec<u16> = vec![80, 443, 53];
-    let (interface, source_ip): (NetworkInterface, IpAddr) = get_interface("en0");
+    let (interface, source_ip): (NetworkInterface, IpAddr) = get_interface(interface_name);
     let timeout: Duration = Duration::from_secs(1);
     let wait_after_send: u64 = 5;
 
@@ -130,8 +131,15 @@ fn get_socket(destination: IpAddr) -> Result<TransportSender, String> {
 }
 
 //get the interface to establish a datalink channel
-fn get_interface(interface_name: &str) -> (NetworkInterface, IpAddr) {
+fn get_interface(interface_name: Option<String>) -> (NetworkInterface, IpAddr) {
     let interfaces = pnet::datalink::interfaces();
+
+    let Some(interface_name) = interface_name else {
+        println!("Interface names available:");
+        { interfaces.iter() }.for_each(|iface| println!("{}", iface.name));
+        std::process::exit(1);
+    };
+
     let interfaces_name_match = |iface: &NetworkInterface| iface.name == interface_name;
 
     if let Some(interface) = interfaces.into_iter().find(interfaces_name_match) {
