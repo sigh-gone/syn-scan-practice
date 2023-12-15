@@ -18,12 +18,22 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+/*
+
+Consts
+
+ */
 pub const IPV4_HEADER_LEN: usize = 20;
 pub const IPV6_HEADER_LEN: usize = 40;
 pub const ETHERNET_HEADER_LEN: usize = 14;
 
+/*
+
+config struct
+
+ */
 #[derive(Clone)]
 pub struct Config {
     interface_ip: IpAddr,
@@ -31,26 +41,25 @@ pub struct Config {
     destination_ip: IpAddr,
     ports_to_scan: Vec<u16>,
     timeout: Duration,
-    wait_after_send: Duration,
     all_sent: Arc<AtomicBool>,
 }
 
+/*
+
+main
+
+ */
 fn main() {
     //setting up values for new config and an interface to send into receive_packets
     let destination_ip: IpAddr = "127.0.0.1".parse().expect("Invalid IP address");
     let ports_to_scan: Vec<u16> = vec![80, 443, 53];
     let (interface, source_ip): (NetworkInterface, IpAddr) = get_interface("en0");
-    let timeout: Duration = Duration::from_secs(1);
-    let wait_after_send: u64 = 5;
+    let time_to_send = 500 * ports_to_scan.len() as u64;
+    let timeout: Duration = Duration::from_millis(time_to_send);
 
     //config
-    let config: Config = Config::new(
-        destination_ip,
-        ports_to_scan,
-        source_ip,
-        timeout,
-        wait_after_send,
-    );
+    let config: Config = Config::new(destination_ip, ports_to_scan, source_ip, timeout);
+
     //sending to another thread
     let config_clone = config.clone();
 
@@ -89,7 +98,6 @@ impl Config {
         ports_to_scan: Vec<u16>,
         source_ip: IpAddr,
         timeout: Duration,
-        wait_after_send: u64,
     ) -> Self {
         let mut rng: ThreadRng = thread_rng();
         let source_port: u16 = rng.gen_range(10024..65535);
@@ -99,7 +107,6 @@ impl Config {
             destination_ip,
             ports_to_scan,
             timeout,
-            wait_after_send: Duration::from_secs(wait_after_send),
             all_sent: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -228,7 +235,7 @@ fn send_packets(config: Config, mut sender: TransportSender) {
             println!("sent {:?}", destination_port);
         }
     }
-    thread::sleep(config.wait_after_send);
+    thread::sleep(config.timeout);
     config.all_sent.store(true, Ordering::SeqCst)
 }
 
@@ -238,7 +245,6 @@ receive packets
 
  */
 fn receive_packets(config: Config, mut sender: TransportSender, mut rx: Box<dyn DataLinkReceiver>) {
-    let start = Instant::now();
     loop {
         //doesnt get in here
         match rx.next() {
@@ -313,9 +319,7 @@ fn receive_packets(config: Config, mut sender: TransportSender, mut rx: Box<dyn 
                 println!("error while receiving packet: {:?}", e)
             }
         }
-        if config.all_sent.load(Ordering::SeqCst)
-            || Instant::now().duration_since(start) > config.timeout
-        {
+        if config.all_sent.load(Ordering::SeqCst) {
             break;
         }
     }
