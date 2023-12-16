@@ -1,6 +1,6 @@
 /*
 
-usings
+using statement
 
  */
 use pnet::{
@@ -16,6 +16,7 @@ use pnet::{
     transport::{self, TransportChannelType, TransportProtocol, TransportSender},
 };
 use rand::{rngs::ThreadRng, thread_rng, Rng};
+use std::time::Instant;
 use std::{
     net::IpAddr,
     sync::atomic::{AtomicBool, Ordering},
@@ -44,10 +45,16 @@ pub struct Config {
     destination_ip: IpAddr,
     ports_to_scan: Vec<u16>,
     wait_after_send: Duration,
+    timeout: Duration,
     all_sent: Arc<AtomicBool>,
 }
 impl Config {
-    pub fn new(destination_ip: IpAddr, ports_to_scan: Vec<u16>, interface_ip: IpAddr) -> Self {
+    pub fn new(
+        destination_ip: IpAddr,
+        ports_to_scan: Vec<u16>,
+        interface_ip: IpAddr,
+        timeout: u64,
+    ) -> Self {
         let mut rng: ThreadRng = thread_rng();
         let source_port: u16 = rng.gen_range(10024..65535);
         Self {
@@ -56,6 +63,7 @@ impl Config {
             destination_ip,
             wait_after_send: Duration::from_millis(500 * ports_to_scan.len() as u64),
             ports_to_scan,
+            timeout: Duration::from_secs(timeout),
             all_sent: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -75,8 +83,11 @@ fn main() {
     let ports_to_scan: Vec<u16> = vec![80, 443, 53];
     let (interface, interface_ip): (NetworkInterface, IpAddr) = get_interface(interface_name);
 
+    //timeout value if op isnt working correctly, going to be in secs.
+    let timeout: u64 = 10;
+
     //config
-    let config: Config = Config::new(destination_ip, ports_to_scan, interface_ip);
+    let config: Config = Config::new(destination_ip, ports_to_scan, interface_ip, timeout);
 
     //create the arcs to send among other threads
     let config_arc = Arc::new(config);
@@ -134,14 +145,14 @@ fn get_socket(destination: IpAddr) -> Result<TransportSender, String> {
     }
 }
 
-//get the interface to establish a datalink channel
+//get the interface to establish a data link channel
 fn get_interface(interface_name: Option<String>) -> (NetworkInterface, IpAddr) {
     let interfaces = pnet::datalink::interfaces();
 
     //checks if interface exists, and if not it lists out available interfaces
     let Some(interface_name) = interface_name else {
         println!("Interface names available:");
-        { interfaces.iter() }.for_each(|iface| println!("{}", iface.name));
+        { interfaces.iter() }.for_each(|interface| println!("{}", interface.name));
         std::process::exit(1);
     };
 
@@ -242,7 +253,8 @@ fn send_packets(config: &Config, mut sender: TransportSender) {
     }
     //sleep to change the all_sent flag
     thread::sleep(config.wait_after_send);
-    config.all_sent.store(true, Ordering::SeqCst)
+    config.all_sent.store(true, Ordering::SeqCst);
+    println!("{:?}", config.all_sent);
 }
 
 /*
@@ -255,6 +267,7 @@ fn receive_packets(
     mut sender: TransportSender,
     mut rx: Box<dyn DataLinkReceiver>,
 ) {
+    let start = Instant::now();
     //loops over received packets, may not be all our packets
     loop {
         //we got a packet
@@ -282,11 +295,13 @@ fn receive_packets(
                         );
                         match rst_packet {
                             Ok(rst_packet) => {
-                                let _ = sender.send_to(rst_packet, config.destination_ip);
+                                if let Some(rst_packet) = rst_packet {
+                                    let _ = sender.send_to(rst_packet, config.destination_ip);
+                                }
                             }
                             Err(e) => {
                                 //prints too much
-                                //println!("error {:?}", e)
+                                println!("error {:?}", e)
                             }
                         }
                     }
@@ -308,16 +323,19 @@ fn receive_packets(
                         );
                         match rst_packet {
                             Ok(rst_packet) => {
-                                let _ = sender.send_to(rst_packet, config.destination_ip);
+                                if let Some(rst_packet) = rst_packet {
+                                    let _ = sender.send_to(rst_packet, config.destination_ip);
+                                }
                             }
                             Err(e) => {
                                 //oops
-                                //println!("error: {:?}", e)
+                                println!("error: {:?}", e);
                             }
                         }
                     }
 
                     _ => {
+                        println!("error receiving");
                         continue;
                     }
                 }
@@ -328,7 +346,9 @@ fn receive_packets(
             }
         }
         //check if all_sent flag is true
-        if config.all_sent.load(Ordering::SeqCst) {
+        if config.all_sent.load(Ordering::SeqCst)
+            || Instant::now().duration_since(start) > config.timeout
+        {
             break;
         }
     }
@@ -339,44 +359,40 @@ fn handle_tcp<'a>(
     config: &Config,
     ip_addr: IpAddr,
     buffer: &'a mut [u8],
-) -> Result<MutableTcpPacket<'a>, String> {
-    let tcp_packet = match TcpPacket::new(ip_payload) {
-        Some(packet) => packet,
-        None => return Err("Failed to create TCP packet".into()),
-    };
+) -> Result<Option<MutableTcpPacket<'a>>, String> {
+    let tcp_packet =
+        TcpPacket::new(ip_payload).ok_or_else(|| "Failed to create TCP packet".to_string())?;
 
-    let mut rst_packet =
-        MutableTcpPacket::new(buffer).expect("Failed to create mutable TCP packet");
+    let mut rst_packet = MutableTcpPacket::new(buffer)
+        .ok_or_else(|| "Failed to create mutable TCP packet".to_string())?;
 
-    if tcp_packet.get_destination() == config.source_port {
-        match tcp_packet.get_flags() {
-            TcpFlags::SYN | TcpFlags::ACK => {
-                //print out its open
-                println!("port {} open on host {}", tcp_packet.get_source(), ip_addr);
+    if tcp_packet.get_destination() != config.source_port {
+        return Ok(None);
+    }
 
-                //build out return packet
-                build_packet(
-                    &mut rst_packet,
-                    config.interface_ip,
-                    config.destination_ip,
-                    config.source_port,
-                    tcp_packet.get_source(),
-                    false,
-                );
-                //port is closed.
-                Ok(rst_packet)
-            }
-            TcpFlags::RST => Err(format!("{}, closed", tcp_packet.get_source())),
-            _ => Err(format!(
-                "misc flag {} on port {}",
-                tcp_packet.get_flags(),
-                tcp_packet.get_source()
-            )),
+    match tcp_packet.get_flags() {
+        TcpFlags::SYN | TcpFlags::ACK => {
+            println!("port {} open on host {}", tcp_packet.get_source(), ip_addr);
+            build_packet(
+                &mut rst_packet,
+                config.interface_ip,
+                config.destination_ip,
+                config.source_port,
+                tcp_packet.get_source(),
+                false,
+            );
+            Ok(Some(rst_packet))
         }
-    } else {
-        Err("not our packet".to_string()) // or some other default behavior
+        TcpFlags::RST => Err(format!("{}, closed", tcp_packet.get_source())),
+        _ => Err(format!(
+            "misc flag {} on port {}",
+            tcp_packet.get_flags(),
+            tcp_packet.get_source()
+        )),
     }
 }
+
+//reduce redundancy
 fn get_buffer(config: &Config) -> Vec<u8> {
     let header_length = match config.destination_ip {
         IpAddr::V4(_) => IPV4_HEADER_LEN,
