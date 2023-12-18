@@ -15,8 +15,7 @@ use pnet::{
     },
     transport::{self, TransportChannelType, TransportProtocol, TransportSender},
 };
-use rand::{rngs::ThreadRng, thread_rng, Rng};
-use std::ops::Deref;
+use rand::{thread_rng, Rng};
 use std::{
     net::IpAddr,
     sync::{
@@ -58,7 +57,7 @@ impl Config {
         timeout: u64,
     ) -> Self {
         //get ephemeral port to use
-        let source_port: u16 = generate_random_sequence(10024, 65535) as u16;
+        let source_port: u16 = generate_random_port(10024, 65535) as u16;
         Self {
             interface_ip,
             source_port,
@@ -98,6 +97,8 @@ fn main() {
 
     //change to desired ports
     let ports_to_scan: Vec<u16> = vec![443];
+
+    //get interface and the interface_ip
     let (interface, interface_ip): (NetworkInterface, IpAddr) = get_interface(interface_name);
 
     //timeout value if op isnt working correctly, going to be in secs.
@@ -179,6 +180,7 @@ fn get_interface(interface_name: Option<String>) -> (NetworkInterface, IpAddr) {
     //set up closure to use
     let interfaces_name_match = |interface: &NetworkInterface| interface.name == interface_name;
 
+    //find and return the tuple
     if let Some(interface) = interfaces.into_iter().find(interfaces_name_match) {
         match interface.ips.first() {
             Some(ip_network) => {
@@ -211,11 +213,9 @@ fn build_packet(
     tcp_packet.set_sequence(0);
     tcp_packet.set_window(64240);
     tcp_packet.set_data_offset(8);
-    tcp_packet.set_sequence(0);
 
     //if syn, set syn flag, if rst set rst flag
     if syn {
-        tcp_packet.set_sequence(0);
         tcp_packet.set_flags(TcpFlags::SYN);
         tcp_packet.set_options(&[
             TcpOption::mss(1460),
@@ -446,7 +446,7 @@ fn get_buffer(config: &Config) -> Vec<u8> {
     vec
 }
 
-fn generate_random_sequence(min: u32, max: u32) -> u32 {
+fn generate_random_port(min: u32, max: u32) -> u32 {
     let mut rng = thread_rng();
     rng.gen_range(min..max)
 }
