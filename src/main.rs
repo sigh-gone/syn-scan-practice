@@ -16,6 +16,7 @@ use pnet::{
     transport::{self, TransportChannelType, TransportProtocol, TransportSender},
 };
 use rand::{rngs::ThreadRng, thread_rng, Rng};
+use std::ops::Deref;
 use std::{
     net::IpAddr,
     sync::{
@@ -57,14 +58,13 @@ impl Config {
         timeout: u64,
     ) -> Self {
         //get ephemeral port to use
-        let mut rng: ThreadRng = thread_rng();
-        let source_port: u16 = rng.gen_range(10024..65535);
+        let source_port: u16 = generate_random_sequence(10024, 65535) as u16;
         Self {
             interface_ip,
             source_port,
             destination_ip,
             //set the kill flag, giving every syn packet a 500 millisecond roundtrip
-            wait_after_send: Duration::from_millis(500 * ports_to_scan.len() as u64),
+            wait_after_send: Duration::from_millis(1500 * ports_to_scan.len() as u64),
             ports_to_scan,
             //timeout just in case we need it.
             timeout: Duration::from_secs(timeout),
@@ -110,6 +110,9 @@ fn main() {
     let config_arc = Arc::new(config);
     let config_arc_clone = config_arc.clone();
 
+    let rx_builder = thread::Builder::new().name("receive_thread".to_string());
+    let tx_builder = thread::Builder::new().name("send_thread".to_string());
+
     //set up senders for sender syn packets (sender) and rst packets to close the connection (receiver)
     let syn_sender: TransportSender =
         get_socket(destination_ip).expect("Failed to create tx_sender");
@@ -124,18 +127,18 @@ fn main() {
     };
 
     //receiving packet thread
-    let rx_thread = thread::spawn(move || {
+    let rx_thread = rx_builder.spawn(move || {
         receive_packets(&config_arc, rst_sender, rx);
     });
 
     //sending packet thread
-    let tx_thread = thread::spawn(move || {
+    let tx_thread = tx_builder.spawn(move || {
         send_packets(&config_arc_clone, syn_sender);
     });
 
     //joining the handles
-    let _ = rx_thread.join();
-    let _ = tx_thread.join();
+    let _ = rx_thread.expect("receive failed").join();
+    let _ = tx_thread.expect("send failed").join();
 }
 
 //build out socket
@@ -208,18 +211,20 @@ fn build_packet(
     tcp_packet.set_sequence(0);
     tcp_packet.set_window(64240);
     tcp_packet.set_data_offset(8);
-    tcp_packet.set_urgent_ptr(0);
     tcp_packet.set_sequence(0);
-    tcp_packet.set_options(&[
-        TcpOption::mss(1460),
-        TcpOption::sack_perm(),
-        TcpOption::nop(),
-        TcpOption::nop(),
-        TcpOption::wscale(7),
-    ]);
+
     //if syn, set syn flag, if rst set rst flag
     if syn {
+        tcp_packet.set_sequence(0);
         tcp_packet.set_flags(TcpFlags::SYN);
+        tcp_packet.set_options(&[
+            TcpOption::mss(1460),
+            TcpOption::sack_perm(),
+            TcpOption::nop(),
+            TcpOption::nop(),
+            TcpOption::wscale(7),
+        ]);
+        tcp_packet.set_urgent_ptr(0);
     } else {
         tcp_packet.set_flags(TcpFlags::RST);
     }
@@ -341,6 +346,8 @@ fn receive_packets(
                             match rst_packet {
                                 Ok(rst_packet) => {
                                     if let Some(rst_packet) = rst_packet {
+                                        println!("{:?}", rst_packet.get_source());
+                                        println!("{:?}", config.destination_ip);
                                         let _ = sender.send_to(rst_packet, config.destination_ip);
                                     }
                                 }
@@ -437,4 +444,9 @@ fn get_buffer(config: &Config) -> Vec<u8> {
     //get and return buffer of correct length
     let vec: Vec<u8> = vec![0; ETHERNET_HEADER_LEN + header_length + 86];
     vec
+}
+
+fn generate_random_sequence(min: u32, max: u32) -> u32 {
+    let mut rng = thread_rng();
+    rng.gen_range(min..max)
 }
