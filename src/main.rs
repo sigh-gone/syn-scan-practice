@@ -19,8 +19,10 @@ use rand::{rngs::ThreadRng, thread_rng, Rng};
 use std::time::Instant;
 use std::{
     net::IpAddr,
-    sync::atomic::{AtomicBool, Ordering},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     thread,
     time::Duration,
 };
@@ -77,10 +79,22 @@ main
 fn main() {
     //setting up values for new config and an interface to send into receive_packets
     let interface_name = std::env::args().nth(1);
-    let destination_ip: IpAddr = "127.0.0.1".parse().expect("Invalid IP address");
+    let ip: Option<String> = std::env::args().nth(2); //"127.0.0.1".parse().expect("Invalid IP address");
+    let destination_ip: IpAddr;
+
+    if let Some(ip) = ip {
+        match ip.parse::<IpAddr>() {
+            Ok(ip) => destination_ip = ip,
+            Err(err) => {
+                panic!("error parsing ip address {}\n error: \n {}", ip, err);
+            }
+        }
+    } else {
+        panic!("no ipv4 or ipv6 address provided")
+    }
 
     //change to desired ports
-    let ports_to_scan: Vec<u16> = vec![80, 443, 53];
+    let ports_to_scan: Vec<u16> = vec![443];
     let (interface, interface_ip): (NetworkInterface, IpAddr) = get_interface(interface_name);
 
     //timeout value if op isnt working correctly, going to be in secs.
@@ -254,7 +268,6 @@ fn send_packets(config: &Config, mut sender: TransportSender) {
     //sleep to change the all_sent flag
     thread::sleep(config.wait_after_send);
     config.all_sent.store(true, Ordering::SeqCst);
-    println!("{:?}", config.all_sent);
 }
 
 /*
@@ -282,26 +295,25 @@ fn receive_packets(
                     EtherTypes::Ipv4 => {
                         let ipv4_packet = Ipv4Packet::new(eth_packet.payload()).unwrap();
                         //if next layer up isn't tcp, we don't care
-                        if ipv4_packet.get_next_level_protocol() != IpNextHeaderProtocols::Tcp {
-                            continue;
-                        }
-                        //get buffer to have a lifetime outside the function, done for ownership reasons
-                        let mut buffer = get_buffer(config);
-                        let rst_packet = handle_tcp(
-                            ipv4_packet.payload(),
-                            config,
-                            ipv4_packet.get_source().into(),
-                            &mut buffer,
-                        );
-                        match rst_packet {
-                            Ok(rst_packet) => {
-                                if let Some(rst_packet) = rst_packet {
-                                    let _ = sender.send_to(rst_packet, config.destination_ip);
+                        if ipv4_packet.get_next_level_protocol() == IpNextHeaderProtocols::Tcp {
+                            //get buffer to have a lifetime outside the function, done for ownership reasons
+                            let mut buffer = get_buffer(config);
+                            let rst_packet = handle_tcp(
+                                ipv4_packet.payload(),
+                                config,
+                                ipv4_packet.get_source().into(),
+                                &mut buffer,
+                            );
+                            match rst_packet {
+                                Ok(rst_packet) => {
+                                    if let Some(rst_packet) = rst_packet {
+                                        let _ = sender.send_to(rst_packet, config.destination_ip);
+                                    }
                                 }
-                            }
-                            Err(e) => {
-                                //prints too much
-                                println!("error {:?}", e)
+                                Err(e) => {
+                                    //prints too much
+                                    println!("error {:?}", e)
+                                }
                             }
                         }
                     }
@@ -334,10 +346,7 @@ fn receive_packets(
                         }
                     }
 
-                    _ => {
-                        println!("error receiving");
-                        continue;
-                    }
+                    _ => {}
                 }
             }
             //print out if there is an error receiving a packet
@@ -370,25 +379,25 @@ fn handle_tcp<'a>(
         return Ok(None);
     }
 
-    match tcp_packet.get_flags() {
-        TcpFlags::SYN | TcpFlags::ACK => {
-            println!("port {} open on host {}", tcp_packet.get_source(), ip_addr);
-            build_packet(
-                &mut rst_packet,
-                config.interface_ip,
-                config.destination_ip,
-                config.source_port,
-                tcp_packet.get_source(),
-                false,
-            );
-            Ok(Some(rst_packet))
-        }
-        TcpFlags::RST => Err(format!("{}, closed", tcp_packet.get_source())),
-        _ => Err(format!(
+    if tcp_packet.get_flags() == TcpFlags::SYN | TcpFlags::ACK {
+        println!("port {} open on host {}", tcp_packet.get_source(), ip_addr);
+        build_packet(
+            &mut rst_packet,
+            config.interface_ip,
+            config.destination_ip,
+            config.source_port,
+            tcp_packet.get_source(),
+            false,
+        );
+        Ok(Some(rst_packet))
+    } else if tcp_packet.get_flags() == TcpFlags::RST {
+        Err(format!(
             "misc flag {} on port {}",
             tcp_packet.get_flags(),
             tcp_packet.get_source()
-        )),
+        ))
+    } else {
+        Ok(None)
     }
 }
 
