@@ -16,7 +16,6 @@ use pnet::{
     transport::{self, TransportChannelType, TransportProtocol, TransportSender},
 };
 use rand::{rngs::ThreadRng, thread_rng, Rng};
-use std::time::Instant;
 use std::{
     net::IpAddr,
     sync::{
@@ -24,7 +23,7 @@ use std::{
         Arc,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 /*
@@ -57,15 +56,19 @@ impl Config {
         interface_ip: IpAddr,
         timeout: u64,
     ) -> Self {
+        //get ephemeral port to use
         let mut rng: ThreadRng = thread_rng();
         let source_port: u16 = rng.gen_range(10024..65535);
         Self {
             interface_ip,
             source_port,
             destination_ip,
+            //set the kill flag, giving every syn packet a 500 millisecond roundtrip
             wait_after_send: Duration::from_millis(500 * ports_to_scan.len() as u64),
             ports_to_scan,
+            //timeout just in case we need it.
             timeout: Duration::from_secs(timeout),
+            //kill flag
             all_sent: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -79,10 +82,10 @@ main
 fn main() {
     //setting up values for new config and an interface to send into receive_packets
     let interface_name = std::env::args().nth(1);
-    let ip: Option<String> = std::env::args().nth(2); //"127.0.0.1".parse().expect("Invalid IP address");
+    //set up var to use, make sure its in scope
     let destination_ip: IpAddr;
 
-    if let Some(ip) = ip {
+    if let Some(ip) = std::env::args().nth(2) {
         match ip.parse::<IpAddr>() {
             Ok(ip) => destination_ip = ip,
             Err(err) => {
@@ -120,12 +123,12 @@ fn main() {
         Err(e) => panic!("Error happened {}", e),
     };
 
-    //receiving thread
+    //receiving packet thread
     let rx_thread = thread::spawn(move || {
         receive_packets(&config_arc, rst_sender, rx);
     });
 
-    //sending thread
+    //sending packet thread
     let tx_thread = thread::spawn(move || {
         send_packets(&config_arc_clone, syn_sender);
     });
@@ -170,6 +173,7 @@ fn get_interface(interface_name: Option<String>) -> (NetworkInterface, IpAddr) {
         std::process::exit(1);
     };
 
+    //set up closure to use
     let interfaces_name_match = |interface: &NetworkInterface| interface.name == interface_name;
 
     if let Some(interface) = interfaces.into_iter().find(interfaces_name_match) {
@@ -234,7 +238,7 @@ fn build_packet(
 
 /*
 
-send sockets
+send packets: sends packets to all of the relevant ports
 
  */
 
@@ -267,12 +271,13 @@ fn send_packets(config: &Config, mut sender: TransportSender) {
     }
     //sleep to change the all_sent flag
     thread::sleep(config.wait_after_send);
+    //mark to true to kill receive_packets loop
     config.all_sent.store(true, Ordering::SeqCst);
 }
 
 /*
 
-receive packets
+receive packets : receives packets
 
  */
 fn receive_packets(
@@ -298,12 +303,14 @@ fn receive_packets(
                         if ipv4_packet.get_next_level_protocol() == IpNextHeaderProtocols::Tcp {
                             //get buffer to have a lifetime outside the function, done for ownership reasons
                             let mut buffer = get_buffer(config);
+                            //develop rst packet to send
                             let rst_packet = handle_tcp(
                                 ipv4_packet.payload(),
                                 config,
                                 ipv4_packet.get_source().into(),
                                 &mut buffer,
                             );
+                            //rst_packet is a Result<Option> so this unwraps it all
                             match rst_packet {
                                 Ok(rst_packet) => {
                                     if let Some(rst_packet) = rst_packet {
@@ -322,30 +329,29 @@ fn receive_packets(
                         let ipv6_packet = Ipv6Packet::new(eth_packet.payload()).unwrap();
 
                         //if next layer up isn't tcp, we don't care
-                        if ipv6_packet.get_next_header() != IpNextHeaderProtocols::Tcp {
-                            continue;
-                        }
-                        //get buffer to have a lifetime outside the function, done for ownership reasons
-                        let mut buffer = get_buffer(config);
-                        let rst_packet = handle_tcp(
-                            ipv6_packet.payload(),
-                            config,
-                            ipv6_packet.get_source().into(),
-                            &mut buffer,
-                        );
-                        match rst_packet {
-                            Ok(rst_packet) => {
-                                if let Some(rst_packet) = rst_packet {
-                                    let _ = sender.send_to(rst_packet, config.destination_ip);
+                        if ipv6_packet.get_next_header() == IpNextHeaderProtocols::Tcp {
+                            //get buffer to have a lifetime outside the function, done for ownership reasons
+                            let mut buffer = get_buffer(config);
+                            let rst_packet = handle_tcp(
+                                ipv6_packet.payload(),
+                                config,
+                                ipv6_packet.get_source().into(),
+                                &mut buffer,
+                            );
+                            match rst_packet {
+                                Ok(rst_packet) => {
+                                    if let Some(rst_packet) = rst_packet {
+                                        let _ = sender.send_to(rst_packet, config.destination_ip);
+                                    }
                                 }
-                            }
-                            Err(e) => {
-                                //oops
-                                println!("error: {:?}", e);
+                                Err(e) => {
+                                    //oops
+                                    println!("error: {:?}", e);
+                                }
                             }
                         }
                     }
-
+                    //we dont care, do nothing so we can check breaking condition
                     _ => {}
                 }
             }
@@ -356,6 +362,7 @@ fn receive_packets(
         }
         //check if all_sent flag is true
         if config.all_sent.load(Ordering::SeqCst)
+            //check if timeout is hit
             || Instant::now().duration_since(start) > config.timeout
         {
             break;
@@ -363,24 +370,31 @@ fn receive_packets(
     }
 }
 
+//handles the tcp packet
 fn handle_tcp<'a>(
     ip_payload: &[u8],
     config: &Config,
     ip_addr: IpAddr,
     buffer: &'a mut [u8],
 ) -> Result<Option<MutableTcpPacket<'a>>, String> {
+    //create tcp packet with the ip packet payload
     let tcp_packet =
         TcpPacket::new(ip_payload).ok_or_else(|| "Failed to create TCP packet".to_string())?;
 
-    let mut rst_packet = MutableTcpPacket::new(buffer)
-        .ok_or_else(|| "Failed to create mutable TCP packet".to_string())?;
-
+    //if not ours, Ok a None value
     if tcp_packet.get_destination() != config.source_port {
         return Ok(None);
     }
 
+    //build mutable tcp packet with the input buffer
+    let mut rst_packet = MutableTcpPacket::new(buffer)
+        .ok_or_else(|| "Failed to create mutable TCP packet".to_string())?;
+
+    //check flags
     if tcp_packet.get_flags() == TcpFlags::SYN | TcpFlags::ACK {
+        //Its ours and the port is open
         println!("port {} open on host {}", tcp_packet.get_source(), ip_addr);
+        //build rst packet
         build_packet(
             &mut rst_packet,
             config.interface_ip,
@@ -391,22 +405,36 @@ fn handle_tcp<'a>(
         );
         Ok(Some(rst_packet))
     } else if tcp_packet.get_flags() == TcpFlags::RST {
+        //packet is ours and port is closed
+        /*
+
+        TODO: handle other potential situations
+
+         */
         Err(format!(
             "misc flag {} on port {}",
             tcp_packet.get_flags(),
             tcp_packet.get_source()
         ))
     } else {
+        /*
+        flag is something we dont handle yet or not relevant
+
+        TODO: handle other potential situations
+
+         */
         Ok(None)
     }
 }
 
 //reduce redundancy
 fn get_buffer(config: &Config) -> Vec<u8> {
+    //check if ipv4 or ipv6
     let header_length = match config.destination_ip {
         IpAddr::V4(_) => IPV4_HEADER_LEN,
         IpAddr::V6(_) => IPV6_HEADER_LEN,
     };
+    //get and return buffer of correct length
     let vec: Vec<u8> = vec![0; ETHERNET_HEADER_LEN + header_length + 86];
     vec
 }
