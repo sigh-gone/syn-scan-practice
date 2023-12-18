@@ -63,7 +63,7 @@ impl Config {
             source_port,
             destination_ip,
             //set the kill flag, giving every syn packet a 500 millisecond roundtrip
-            wait_after_send: Duration::from_millis(1500 * ports_to_scan.len() as u64),
+            wait_after_send: Duration::from_millis(500 * ports_to_scan.len() as u64),
             ports_to_scan,
             //timeout just in case we need it.
             timeout: Duration::from_secs(timeout),
